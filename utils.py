@@ -42,18 +42,7 @@ def lstm(inp, sequence, layers, name=None):
             lstm_output = tf.gather_nd(tf.transpose(outputs, [1, 0, 2]),
                                        tf.stack((tf.range(batch_size), sequence), axis=1))
             tf.summary.histogram('lstm_out', lstm_output)
-    return lstm_output, (z_state, state)
-
-
-def prelu(_x):
-    with tf.variable_scope('prelu', reuse=False):
-        alphas = tf.get_variable('alpha', _x.get_shape()[-1], initializer=tf.initializers.constant(0.01),
-                                 dtype=tf.float32)
-        return tf.nn.relu(_x) + (alphas * (_x - abs(_x)) * 0.5)
-
-
-full_layers = []
-full_weights_reg = []
+    return lstm_output, ( state, z_state)
 
 
 def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shapes=False, scope=None, activation=None,
@@ -63,8 +52,8 @@ def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shap
         logger.warning('Kwarg %s: %s, is not valid and will be ignored.' % (k, v))
 
     activation_name = activation.__name__ if activation else None
-    logger.info("Constructing full layer \'%s\'; inp: %s, out_size: %s, activation: %s" % (
-    scope, inp.name, out_size, activation_name))
+    logger.info("Constructing full layer \'%s\'; inp: %s, out_size: %s, activation: %s" %
+                (scope, inp.name, out_size, activation_name))
 
     with tf.variable_scope("full_layer_%s" % scope):
         inp_shape = inp.get_shape()
@@ -72,9 +61,7 @@ def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shap
 
         w = tf.get_variable('w', shape=(inp_shape[-1], out_size), initializer=tf.initializers.random_normal(*w_init))
         b = tf.get_variable('b', shape=(out_size,), initializer=tf.zeros_initializer())
-        full_layers.append((w, b))
-        if reg:
-            full_weights_reg.append(w)
+        tf.add_to_collection('full_weights_reg', w)
 
         if summary_w:
             tf.summary.histogram('w', w)

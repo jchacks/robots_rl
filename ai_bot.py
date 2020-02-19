@@ -1,12 +1,20 @@
 import atexit
+import os
 import struct
+import time
+from collections import deque
 
 import numpy as np
 from robots import SignalRobot
 from robots.proto import round_pb2
 from robots.robot.utils import Move, Turn
-import time
 
+os.chdir('../robocode_robot')
+
+from model import call
+
+call_model = call()
+next(call_model)
 
 
 class OrnsteinUhlenbeckActionNoise:
@@ -35,19 +43,29 @@ class AiRobot(SignalRobot):
     def __init__(self, *args, **kwargs):
         super(AiRobot, self).__init__(*args, **kwargs)
         self.buffer = None
+        self.memory = deque(maxlen=10)
 
     def on_init(self):
         super(AiRobot, self).on_init()
         if not self.buffer:
-            self.buffer_file = './buffer/%s_%s.pb' % (int(time.time()),id(self))
+            self.buffer_file = './buffer/%s_%s.pb' % (int(time.time()), id(self))
             self.buffer = open(self.buffer_file, 'wb+')
+
             def close():
                 print("Closing buffer")
                 self.buffer.close()
+
             atexit.register(close)
 
-        self.call_model = OrnsteinUhlenbeckActionNoise(np.zeros(5))
+        self.noise = OrnsteinUhlenbeckActionNoise(np.zeros(5))
         self.scan = None
+
+    def call_model(self):
+        ph = np.zeros((1, 10, 10))
+        state = np.concatenate(self.memory)
+        ph[0, -len(state):] = state
+
+        return call_model.send((ph, [len(state)]))
 
     def do(self, tick):
         tick_pb = round_pb2.Tick()
@@ -57,24 +75,28 @@ class AiRobot(SignalRobot):
         tick_pb.state.bearing = self.bearing
         tick_pb.state.energy = self.energy
 
-        scan = self.scan
+        scan = self.scan[0] if self.scan is not None else None
         if scan is not None:
             tick_pb.state.enemy_scanned = 1.0
             tick_pb.state.enemy_distance = scan.distance
             tick_pb.state.enemy_bearing = scan.bearing
             self.scan = None
 
-        data = np.array([
-            scan.bearing if scan else -1.0,
-            scan.distance if scan else -1.0,
-            scan.heading if scan else -1.0,
-            scan.velocity if scan else -1.0,
+        state = np.array([
             *self.position,
             self.bearing,
+            np.sin(self.bearing * np.pi / 180),
+            np.cos(self.bearing * np.pi / 180),
+            1.0 if scan is not None else 0.0,
+            scan.distance if scan is not None else 0.0,
+            scan.bearing if scan is not None else 0.0,
+            np.sin(scan.bearing if scan is not None else 0.0 * np.pi / 180),
+            np.cos(scan.bearing if scan is not None else 0.0 * np.pi / 180),
             self.energy
         ])
 
-        out = self.call_model()
+        self.memory.append(state)
+        out = self.call_model() + self.noise()
         out = np.clip(out, 0.0, 1.0)
         tick_pb.action.move = out[0]
         tick_pb.action.fire = out[1]
@@ -113,8 +135,8 @@ class AiRobot(SignalRobot):
         else:
             self.radar.turning = Turn.NONE
 
-        if out[4] > 0.1:
-            self.set_fire(out[4])
+        if out[4] > 0:
+            self.set_fire(3 * out[4])
 
     def on_scanned_robot(self, event):
         self.scan = event

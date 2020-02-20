@@ -61,7 +61,7 @@ def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shap
 
         w = tf.get_variable('w', shape=(inp_shape[-1], out_size), initializer=tf.initializers.random_normal(*w_init))
         b = tf.get_variable('b', shape=(out_size,), initializer=tf.zeros_initializer())
-        tf.add_to_collection('full_weights_reg', w)
+        tf.add_to_collection('full_weights', w)
 
         if summary_w:
             tf.summary.histogram('w', w)

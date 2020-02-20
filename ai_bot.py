@@ -14,7 +14,6 @@ os.chdir('../robocode_robot')
 from model import call
 
 call_model = call()
-next(call_model)
 
 
 class OrnsteinUhlenbeckActionNoise:
@@ -61,11 +60,11 @@ class AiRobot(SignalRobot):
         self.scan = None
 
     def call_model(self):
-        ph = np.zeros((1, 10, 10))
-        state = np.concatenate(self.memory)
-        ph[0, -len(state):] = state
-
-        return call_model.send((ph, [len(state)]))
+        next(call_model)
+        ph = np.zeros((1, 10, 11))
+        state = np.stack(self.memory)
+        ph[0, :len(state)] = state
+        return call_model.send((ph, np.array([len(state)])))
 
     def do(self, tick):
         tick_pb = round_pb2.Tick()
@@ -96,7 +95,7 @@ class AiRobot(SignalRobot):
         ])
 
         self.memory.append(state)
-        out = self.call_model() + self.noise()
+        out = self.call_model()[0] + self.noise()
         out = np.clip(out, 0.0, 1.0)
         tick_pb.action.move = out[0]
         tick_pb.action.fire = out[1]

@@ -65,9 +65,9 @@ def proto_to_numpy(data):
 
 def numpy_to_windowed(data, window=10, step=1):
     for d in data:
-        actions = d[:, -7:-2]
+        actions = d[:, 10:-1]
         scores = d[:,-1:]
-        state = np.concatenate((d[:,:-7], scores),axis=-1)
+        state = np.concatenate((d[:,:10], scores),axis=-1)
         indexer = np.arange(window)[None, :] + step * np.arange(len(d) - window + 1)[:, None]
         yield state[indexer], actions[indexer[:,-1]]
 
@@ -83,20 +83,22 @@ def windows_to_batch(data):
         states.append(state)
         actions.append(action)
 
-
-file = os.listdir(buffer_dir)[0]
-protos = read_proto(buffer_dir + file)
-nps = proto_to_numpy(protos)
-win = numpy_to_windowed(nps)
-data = windows_to_batch(win)
+def flatten(gen_gen):
+    for gen in gen_gen:
+        for item in gen:
+            yield item
 
 
 
 import model as m
 
-model = m.model(10, 5)
+model = m.model(11, 5)
 train = m.train(model.fetch['score_prediction'])
 
+maw = tf.reduce_mean([tf.reduce_mean(tf.abs(v)) for v in tf.get_collection('full_weights', scope='actor')])
+mcw = tf.reduce_mean([tf.reduce_mean(tf.abs(v)) for v in tf.get_collection('full_weights', scope='critic')])
+tf.summary.scalar('mean_actor_weights', maw)
+tf.summary.scalar('mean_critic_weights', mcw)
 get_summ = tf.summary.merge_all()
 
 saver = tf.train.Saver(tf.trainable_variables(), save_relative_paths=True)
@@ -112,16 +114,29 @@ train_fetches = {
     'actor_loss': train.fetch['actor_loss'],
     'critic_loss': train.fetch['critic_loss'],
 }
+idx = 0
+while True:
+    try:
+        protos = flatten(read_proto(buffer_dir + file) for file in sorted(os.listdir(buffer_dir),reverse=True))
+        nps = proto_to_numpy(protos)
+        win = numpy_to_windowed(nps)
+        data = windows_to_batch(win)
 
-for idx in range(100000):
-    state, action = next(data)
-    res = sess.run(train_fetches, {
-        model.feed['state']: (state, np.ones((len(state),), dtype='int32') * 10),
-        model.feed['action']: action,
-        train.feed['score_target']: state[:, -1, -1][:, None]
-    })
+        for idx in range(idx, idx + 100000):
+            print(idx,'preparing...',end='')
+            state, action = next(data)
+            print('running...',end='')
+            res = sess.run(train_fetches, {
+                model.feed['state']: (state, np.ones((len(state),), dtype='int32') * 10),
+                model.feed['action']: action,
+                train.feed['score_target']: state[:, -1, -1][:, None]
+            })
 
-    summ_writer.add_summary(res['summary'], idx)
-    print(res['actor_loss'], res['critic_loss'])
-    saver.save(sess, './checkpoint/graph', global_step=idx//100)
-
+            print(res['actor_loss'], res['critic_loss'])
+            if idx % 50 == 0:
+                summ_writer.add_summary(res['summary'], idx)
+            if idx % 500 == 0:
+                print('saving')
+                saver.save(sess, './checkpoint/graph', global_step=idx)
+    except RuntimeError:
+        pass

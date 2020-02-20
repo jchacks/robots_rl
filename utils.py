@@ -85,6 +85,12 @@ def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shap
     return out
 
 
+def linear(x, size, name, initializer=None, bias_init=0):
+    w = tf.get_variable(name + "/w", [x.get_shape()[1], size], initializer=initializer)
+    b = tf.get_variable(name + "/b", [size], initializer=tf.constant_initializer(bias_init))
+    return tf.matmul(x, w) + b
+
+
 def conv1d(inp, out_size, width=4, stride=2, scope=None, activation=None):
     assert scope is not None, "'scope' must be given"
     logger.info(

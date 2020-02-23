@@ -66,22 +66,28 @@ def proto_to_numpy(data):
 def numpy_to_windowed(data, window=10, step=1):
     for d in data:
         actions = d[:, 10:-1]
-        scores = d[:,-1:]
-        state = np.concatenate((d[:,:10], scores),axis=-1)
-        indexer = np.arange(window)[None, :] + step * np.arange(len(d) - window + 1)[:, None]
-        yield state[indexer], actions[indexer[:,-1]]
+        state = d[:,:10]
+        scores = d[:,-1]
+        indexer = (np.arange(window)[None, :] + step * np.arange(len(d) - window + 1)[:, None])[:-1]
+
+        scores = scores[indexer[:,-1:]]
+        scores = scores[:-1] - scores[1:]
+        yield state[indexer], actions[indexer[:,-1]], scores
 
 def windows_to_batch(data):
     states = []
     actions = []
+    scores = []
     while True:
         if sum(len(a) for a in actions) > 10000:
-            yield np.concatenate(states), np.concatenate(actions)
+            yield np.concatenate(states), np.concatenate(actions), np.concatenate(scores)
             states = []
             actions = []
-        state, action = next(data)
+            scores = []
+        state, action, score = next(data)
         states.append(state)
         actions.append(action)
+        scores.append(score)
 
 def flatten(gen_gen):
     for gen in gen_gen:

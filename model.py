@@ -10,21 +10,26 @@ def model(state_features, num_actions=5):
     state = tf.placeholder('float32', (None, 10, state_features), 'state')
     seq = tf.placeholder('int32', (None,), 'state_seq')
 
-    with tf.variable_scope('model'):
+    with tf.variable_scope('actor'):
         lstm_out, (out_state, z_state) = lstm(state, seq, [256], name='state')
         tf.summary.histogram('lstm_out', lstm_out)
 
-        out = fully(lstm_out, 256, scope='1', activation=tf.nn.relu)
-        out = fully(out, 128, scope='2', activation=tf.nn.relu)
-        out = fully(out, num_actions, scope='out', activation=tf.nn.relu)
+        act_out = fully(lstm_out, 256, scope='1', activation=tf.nn.relu)
+        act_out = fully(act_out, 128, scope='2', activation=tf.nn.relu)
+        out = fully(act_out, num_actions, scope='out', activation=tf.nn.relu)
         policy = tf.tanh(out)
 
-        out = fully(lstm_out, 128, scope='o1', activation=tf.nn.relu)
+    with tf.variable_scope('critic'):
+        action = tf.placeholder('float32', (None, num_actions), 'action')
+        a1 = fully(action, 128, scope='a1', activation=tf.nn.relu)
+        conc = tf.concat([act_out, a1], axis=1)
+        out = fully(conc, 128, scope='o1', activation=tf.nn.relu)
         out = fully(out, 64, scope='o2', activation=tf.nn.relu)
         value = fully(out, 1, activation=None, scope='out')
 
     return FeedFetch({
         'state': (state, seq),
+        'action': action
     }, {
         'state_lstm': (lstm_out, out_state, z_state),
         'policy': policy,
@@ -32,22 +37,21 @@ def model(state_features, num_actions=5):
     })
 
 
-def train(score_prediction):
+def train(value):
     critic_lr = tf.placeholder_with_default(critic_learning_rate, (), 'actor_lr')
     actor_lr = tf.placeholder_with_default(actor_learning_rate, (), 'actor_lr')
 
     with tf.variable_scope('critic_loss'):
         score_target = tf.placeholder(tf.float32, [None, 1], 'score')
-        critic_loss = tf.reduce_mean((score_target - score_prediction) ** 2)  # + critic_reg
-        tf.summary.scalar('mse', critic_loss)
-        train_critic = tf.train.AdamOptimizer(critic_lr).minimize(critic_loss,
-                                                                  var_list=tf.trainable_variables('critic'))
+        value_loss = tf.reduce_mean((score_target - value) ** 2)  # + critic_reg
+        tf.summary.scalar('mse', value_loss)
+        train_critic = tf.train.AdamOptimizer(critic_lr).minimize(value_loss, var_list=tf.trainable_variables('critic'))
 
     with tf.control_dependencies([train_critic]):
         with tf.variable_scope('actor_loss'):
-            actor_loss = tf.reduce_mean((100 - score_prediction) ** 2)  # + self.actor_reg / 100000
-            tf.summary.scalar('mse', actor_loss)
-            train_actor = tf.train.AdamOptimizer(actor_lr).minimize(actor_loss,
+            policy_loss = tf.reduce_mean((100 - value) ** 2)  # + self.actor_reg / 100000
+            tf.summary.scalar('mse', policy_loss)
+            train_actor = tf.train.AdamOptimizer(actor_lr).minimize(policy_loss,
                                                                     var_list=tf.trainable_variables('actor'))
 
     return FeedFetch({
@@ -57,8 +61,8 @@ def train(score_prediction):
     }, {
         'critic_minimizer': train_critic,
         'actor_minimizer': train_actor,
-        'critic_loss': critic_loss,
-        'actor_loss': actor_loss,
+        'value_loss': value_loss,
+        'policy_loss': policy_loss,
     })
 
 
@@ -66,17 +70,17 @@ def summary():
     return tf.summary.merge_all()
 
 
-class Model(object):
-    def __init__(self):
-        self._model = model(11, 5)
-        config = tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
-        self._sess = tf.Session(config=config)
-        self._saver = tf.train.Saver(tf.trainable_variables('actor'), save_relative_paths=True)
+def call():
+    m = model(11, 5)
+    config = tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
+    sess = tf.Session(config=config)
 
-    def restore(self):
-        chkp = tf.train.latest_checkpoint('./checkpoint/')
-        print("Restoring chkp: %s " % (chkp,))
-        self._saver.restore(self._sess, chkp)
+    saver = tf.train.Saver(tf.trainable_variables('actor'), save_relative_paths=True)
+    chkp = tf.train.latest_checkpoint('./checkpoint/')
+    import os
+    print(os.getcwd(), chkp)
+    saver.restore(sess, chkp)
 
-    def run(self, data):
-        return self._sess.run(self._model.fetch['action_prediction'], {self._model.feed['state']: data})
+    while True:
+        data = yield
+        yield sess.run(m.fetch['policy'], {m.feed['state']: data})

@@ -11,9 +11,8 @@ from robots.robot.utils import Move, Turn
 
 os.chdir('../robocode_robot')
 
-from model import call
+from model import Model
 
-call_model = call()
 
 
 class OrnsteinUhlenbeckActionNoise:
@@ -39,15 +38,19 @@ class OrnsteinUhlenbeckActionNoise:
 
 
 class AiRobot(SignalRobot):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, name=None, **kwargs):
         super(AiRobot, self).__init__(*args, **kwargs)
+        assert name is not None, "Name should be set."
+        self.name = name
         self.buffer = None
         self.memory = deque(maxlen=10)
+        self.model = Model()
 
     def on_init(self):
         super(AiRobot, self).on_init()
+        self.model.restore()
         if not self.buffer:
-            self.buffer_file = './buffer/%s_%s.pb' % (int(time.time()), id(self))
+            self.buffer_file = './buffer/%s_%s.pb' % (int(time.time()), self.name)
             self.buffer = open(self.buffer_file, 'wb+')
 
             def close():
@@ -60,11 +63,11 @@ class AiRobot(SignalRobot):
         self.scan = None
 
     def call_model(self):
-        next(call_model)
+        next(self.run_model)
         ph = np.zeros((1, 10, 11))
         state = np.stack(self.memory)
         ph[0, :len(state)] = state
-        return call_model.send((ph, np.array([len(state)])))
+        return self.model.run((ph, np.array([len(state)])))
 
     def do(self, tick):
         tick_pb = round_pb2.Tick()
@@ -81,6 +84,7 @@ class AiRobot(SignalRobot):
             tick_pb.state.enemy_bearing = scan.bearing
             self.scan = None
 
+        #TODO normalise the position or give max as a state
         state = np.array([
             *self.position,
             self.bearing,

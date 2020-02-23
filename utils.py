@@ -32,17 +32,21 @@ def lstm(inp, sequence, layers, name=None):
 
         state = z_state = lstm_cell.zero_state(batch_size=batch_size, dtype=tf.float32)
         outputs = [tf.zeros(shape=(batch_size, layers[-1]), dtype=tf.float32)]
+        states = [z_state]
 
         for time_step in range(steps):
             cell_output, state = lstm_cell(inp[:, time_step, :], state)
             outputs.append(cell_output)
+            states.append(state)
 
         with tf.variable_scope('output'):
             outputs = tf.stack(outputs)
             lstm_output = tf.gather_nd(tf.transpose(outputs, [1, 0, 2]),
                                        tf.stack((tf.range(batch_size), sequence), axis=1))
+            state_output = tf.gather_nd(tf.transpose(states, [1, 0, 2]),
+                                        tf.stack((tf.range(batch_size), sequence), axis=1))
             tf.summary.histogram('lstm_out', lstm_output)
-    return lstm_output, ( state, z_state)
+    return lstm_output, (state_output, z_state)
 
 
 def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shapes=False, scope=None, activation=None,

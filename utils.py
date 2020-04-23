@@ -37,7 +37,7 @@ def add_to_collection(name, tensors):
         tf.add_to_collection(name, t)
 
 
-def lstm(inp, sequence, layers, name=None):
+def lstm(inp, sequence, layers, name=None, reg=False, summary=False):
     assert name is not None, "'name' cannot be None"
     with tf.variable_scope(name + '_lstm'):
         inp_shape = inp.get_shape()
@@ -52,23 +52,26 @@ def lstm(inp, sequence, layers, name=None):
         else:
             lstm_cell = tf.contrib.rnn.BasicLSTMCell(layers[0])
 
-        state = z_state = lstm_cell.zero_state(batch_size=batch_size, dtype=tf.float32)
+        weights = [v for v in lstm_cell.variables if 'kernal' in v.name]
+        if summary:
+            tf.summary.scalar('lsmt_weights_abs', tf.reduce_mean(tf.abs(weights)))
+
+        if reg:
+            tf.add_to_collection('lstm_weights', weights)
+
+        state = lstm_cell.zero_state(batch_size=batch_size, dtype=tf.float32)
         outputs = [tf.zeros(shape=(batch_size, layers[-1]), dtype=tf.float32)]
-        states = [z_state]
 
         for time_step in range(steps):
             cell_output, state = lstm_cell(inp[:, time_step, :], state)
             outputs.append(cell_output)
-            states.append(state)
 
         with tf.variable_scope('output'):
             outputs = tf.stack(outputs)
             lstm_output = tf.gather_nd(tf.transpose(outputs, [1, 0, 2]),
                                        tf.stack((tf.range(batch_size), sequence), axis=1))
-            state_output = tf.gather_nd(tf.transpose(states, [1, 0, 2]),
-                                        tf.stack((tf.range(batch_size), sequence), axis=1))
             tf.summary.histogram('lstm_out', lstm_output)
-    return lstm_output, (state_output, z_state)
+    return lstm_output
 
 
 def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shapes=False, scope=None, activation=None,
@@ -87,7 +90,8 @@ def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shap
 
         w = tf.get_variable('w', shape=(inp_shape[-1], out_size), initializer=tf.initializers.random_normal(*w_init))
         b = tf.get_variable('b', shape=(out_size,), initializer=tf.zeros_initializer())
-        tf.add_to_collection('full_weights', w)
+        if reg:
+            tf.add_to_collection('full_weights', w)
 
         if summary_w:
             tf.summary.histogram('w', w)

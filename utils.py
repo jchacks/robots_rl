@@ -3,7 +3,7 @@ from collections import namedtuple
 
 import tensorflow as tf
 import numpy as np
-__all__ = ['add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch']
+__all__ = ['add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch', 'mish']
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,9 @@ def linear(x, size, name, initializer=None, bias_init=0):
     w = tf.get_variable(name + "/w", [x.get_shape()[1], size], initializer=initializer)
     b = tf.get_variable(name + "/b", [size], initializer=tf.constant_initializer(bias_init))
     return tf.matmul(x, w) + b
+
+def mish(x):
+    return tf.nn.tanh(tf.nn.softplus(x)) * x
 
 
 def conv1d(inp, out_size, width=4, stride=2, scope=None, activation=None):

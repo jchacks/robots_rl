@@ -1,28 +1,19 @@
-from robots.app import App
-from robots.battle import Battle
+import threading as th
 
-from a2c_model import Runner
+from robots.app import MultiBattleApp
+
+from a2c_model import Model
 from ai_bot import AiRobot
+from runner import Env, Runner
 
-runner = Runner()
+env = Env((200, 200), [AiRobot, AiRobot], num_battles=8)
+runner = Runner(env, Model(9, 2))
 
-class AIBattle(Battle):
-    def __init__(self, *args, **kwargs):
-        super(AIBattle, self).__init__(*args, **kwargs)
-        self.runner = runner
-
-    def delta(self):
-        if not self.is_finished:
-            # Incentive to do something
-            states = {}
-            states.update({robot: (robot.get_state(), robot.energy) for robot in self.alive_robots})
-            if len(states.keys()) > 0:
-                actions = self.runner.test(0, states)
-                print(actions)
-                for r, action in actions.items():
-                    r.delta(self.tick, action)
-
-
-app = App((600, 400))
-app.battle = AIBattle(app, (600, 400), [AiRobot, AiRobot])
-app.on_execute()
+app = MultiBattleApp(dimensions=(1350, 720),
+                     battle=env,
+                     simulate=False,
+                     rows=2,
+                     fps_target=60)
+th = th.Thread(target=app.run, daemon=True)
+th.start()
+runner.test()

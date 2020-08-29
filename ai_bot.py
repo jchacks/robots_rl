@@ -1,10 +1,11 @@
 import os
-from collections import deque
 
 import numba as nb
 import numpy as np
 from robots import SignalRobot
 from robots.robot.utils import Turn
+
+np.set_printoptions(precision=3, suppress=True, linewidth=250)
 
 os.chdir('../robocode_robot')
 
@@ -25,12 +26,17 @@ class AiRobot(SignalRobot):
         super(AiRobot, self).__init__(*args, **kwargs)
         self.buffer = None
         self.records = []
+        self.scan = None
+
+    def delta(self, *args):
+        super(AiRobot, self).delta(*args)
+        return self.get_obs(),
 
     def on_init(self):
         super(AiRobot, self).on_init()
         self.scan = None
 
-    def get_state(self):
+    def get_obs(self):
         scan = self.scan[0] if self.scan is not None else None
         x, y = self.position
         x, y = x / 600, y / 600
@@ -46,6 +52,7 @@ class AiRobot(SignalRobot):
             *g_d,
             # *r_d,
             self.energy / 100,
+            scan.energy / 100 if scan else 1,
             scan.distance / 600 if scan else -1,
             scan.direction[0] if scan else -1,
             scan.direction[1] if scan else -1,
@@ -53,7 +60,10 @@ class AiRobot(SignalRobot):
         self.scan = None
         return state
 
-    def do(self, action):
+    def get_done(self):
+        return self.battle.is_finished
+
+    def do(self, tick, action):
         # # Move Robot
         # if action[0] > 0.01:
         #     self.moving = Move.FORWARD

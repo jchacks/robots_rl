@@ -3,7 +3,8 @@ from collections import namedtuple
 
 import tensorflow as tf
 import numpy as np
-__all__ = ['add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch', 'mish']
+
+__all__ = ['add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch', 'mish', 'discount_with_dones']
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,7 @@ def linear(x, size, name, initializer=None, bias_init=0):
     b = tf.get_variable(name + "/b", [size], initializer=tf.constant_initializer(bias_init))
     return tf.matmul(x, w) + b
 
+
 def mish(x):
     return tf.nn.tanh(tf.nn.softplus(x)) * x
 
@@ -145,3 +147,12 @@ def dropout(inp, pctg, training=True):
         return tf.nn.dropout(inp, keep_prob=pctg)
     else:
         return inp
+
+
+def discount_with_dones(rewards, dones, gamma):
+    discounted = []
+    r = 0
+    for reward, done in zip(rewards[::-1], dones[::-1]):
+        r = reward + gamma * r * (1. - done)  # fixed off by one bug
+        discounted.append(r)
+    return discounted[::-1]

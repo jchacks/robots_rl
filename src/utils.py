@@ -1,10 +1,15 @@
 import logging
 from collections import namedtuple
 
-import tensorflow as tf
 import numpy as np
+import numba as nb
+import tensorflow.compat.v1 as tf
+import tensorflow_probability as tfp
 
-__all__ = ['add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch', 'mish', 'discount_with_dones']
+print(tf.__version__, tfp.__version__)
+tf.disable_v2_behavior()
+
+__all__ = ['tf', 'tfp', 'add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch', 'mish', 'discount_with_dones']
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +153,7 @@ def dropout(inp, pctg, training=True):
     else:
         return inp
 
-
+@nb.njit()
 def discount_with_dones(rewards, dones, gamma):
     discounted = []
     r = 0

@@ -2,11 +2,11 @@ import threading as th
 
 from robots.app import MultiBattleApp
 
-from a2c_model import Model
+from model import Model
 from ai_bot import AiRobot
 from runner import Env, Runner
 
-env = Env((200, 200), [AiRobot, AiRobot], num_battles=8)
+env = Env((200, 200), [AiRobot, AiRobot], num_battles=4)
 runner = Runner(env, Model(9, 2))
 
 app = MultiBattleApp(dimensions=(1350, 720),

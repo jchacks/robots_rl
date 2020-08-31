@@ -7,17 +7,17 @@ from robots.robot.utils import Turn
 
 np.set_printoptions(precision=3, suppress=True, linewidth=250)
 
-os.chdir('../robocode_robot')
+os.chdir("../robocode_robot")
 
 
 def indexer(length, window, step=1):
-    return (np.arange(window)[None, :] + step * np.arange(length - window + 1)[:, None])
+    return np.arange(window)[None, :] + step * np.arange(length - window + 1)[:, None]
 
 
 @nb.njit
 def state_lstm(lstm_history: int, state):
     ph = np.zeros((1, lstm_history, 13))
-    ph[0, :len(state)] = state
+    ph[0, : len(state)] = state
     return ph, np.array([len(state)])
 
 
@@ -30,7 +30,7 @@ class AiRobot(SignalRobot):
 
     def delta(self, *args):
         super(AiRobot, self).delta(*args)
-        return self.get_obs(),
+        return (self.get_obs(),)
 
     def on_init(self):
         super(AiRobot, self).on_init()
@@ -45,18 +45,20 @@ class AiRobot(SignalRobot):
         g_d = self.gun.direction
         r_d = self.radar.direction
 
-        state = np.array([
-            x,
-            y,
-            # *b_d,
-            *g_d,
-            # *r_d,
-            self.energy / 100,
-            scan.energy / 100 if scan else 1,
-            scan.distance / 600 if scan else -1,
-            scan.direction[0] if scan else -1,
-            scan.direction[1] if scan else -1,
-        ])
+        state = np.array(
+            [
+                x,
+                y,
+                # *b_d,
+                *g_d,
+                # *r_d,
+                self.energy / 100,
+                scan.energy / 100 if scan else 1,
+                scan.distance / 600 if scan else -1,
+                scan.direction[0] if scan else -1,
+                scan.direction[1] if scan else -1,
+            ]
+        )
         self.scan = None
         return state
 

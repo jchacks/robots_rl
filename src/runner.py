@@ -1,9 +1,12 @@
 import time
+from threading import Event
 
 import numpy as np
+import numba as nb
 from robots.battle import MultiBattle
-from threading import Event
+
 from utils import discount_with_dones
+
 
 class Memory(object):
     def __init__(self):
@@ -43,10 +46,10 @@ class Runner(object):
         self.should_stop = Event()
 
     def prepare(self):
-        mb_obs = np.asarray(self.memory.mb_obs, dtype='float32').swapaxes(1, 0).reshape(-1, self.batch_ob_shape)
-        mb_rewards = np.asarray(self.memory.mb_rewards, dtype='float32').swapaxes(1, 0)
-        mb_actions = np.asarray(self.memory.mb_actions, dtype='float32').swapaxes(1, 0)
-        mb_values = np.asarray(self.memory.mb_values, dtype='float32').swapaxes(1, 0)
+        mb_obs = np.asarray(self.memory.mb_obs, dtype="float32").swapaxes(1, 0).reshape(-1, self.batch_ob_shape)
+        mb_rewards = np.asarray(self.memory.mb_rewards, dtype="float32").swapaxes(1, 0)
+        mb_actions = np.asarray(self.memory.mb_actions, dtype="float32").swapaxes(1, 0)
+        mb_values = np.asarray(self.memory.mb_values, dtype="float32").swapaxes(1, 0)
         mb_dones = np.asarray(self.memory.mb_dones, dtype=np.bool).swapaxes(1, 0)
         mb_masks = mb_dones[:, :-1]
         mb_dones = mb_dones[:, 1:]
@@ -55,10 +58,10 @@ class Runner(object):
             # Discount/bootstrap off value fn
             last_values = self.model.get_value(self.obs).flatten().tolist()
             for n, (rewards, dones, value) in enumerate(zip(mb_rewards, mb_dones, last_values)):
-                rewards = rewards.tolist()
-                dones = dones.tolist()
+                # rewards = rewards.tolist()
+                # dones = dones.tolist()
                 if dones[-1] == 0:
-                    rewards = discount_with_dones(rewards + [value], dones + [0], self.gamma)[:-1]
+                    rewards = discount_with_dones(np.array(rewards.tolist() + [value]), np.array(dones.tolist() + [0]), self.gamma)[:-1]
                 else:
                     rewards = discount_with_dones(rewards, dones, self.gamma)
 
@@ -87,7 +90,7 @@ class Runner(object):
 
     def test(self, simrate=30):
         self.obs = self.env.get_obs()
-        interval = 1/simrate
+        interval = 1 / simrate
         last_sim = 0
         while not self.should_stop.is_set():
             if (time.time() - last_sim) >= interval:
@@ -100,17 +103,18 @@ class Runner(object):
             t = time.time()
             obs, states, rewards, masks, actions, values = self.run()
             t = time.time() - t
-            advs = rewards - values
-            res = self.model.train(X=obs,
-                                   advantage=advs,
-                                   td_target=rewards,
-                                   action=actions)
-            print(self.iteration,
-                  'advantage:', advs.mean(),
-                  'reward:', round(rewards.mean(), 3),
-                  'critic:', round(res['critic_loss'].mean(), 3),
-                  'fps:', self.train_steps / t,
-                  'samples:', len(obs))
+            res = self.model.train(obs, None, rewards, None, actions, values)
+            print(
+                self.iteration,
+                "reward:",
+                round(rewards.mean(), 3),
+                "critic:",
+                round(res["vf_loss"].mean(), 3),
+                "fps:",
+                self.train_steps / t,
+                "samples:",
+                len(obs),
+            )
             self.iteration += 1
 
 

@@ -6,8 +6,11 @@ from model import Model
 from ai_bot import AiRobot
 from runner import Env, Runner
 
-env = Env((600, 600), [AiRobot, AiRobot], num_battles=100)
-runner = Runner(env, Model(9, 2), train_steps=20)
+num_battles = 20
+num_steps = 200
+env = Env((200, 200), [AiRobot, AiRobot], num_battles=num_battles)
+model = Model(num_steps, num_battles * 2, 9, 2)
+runner = Runner(env, model, train_steps=num_steps)
 
 app = MultiBattleApp(
     dimensions=(1350, 720),

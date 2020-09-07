@@ -2,9 +2,7 @@ import time
 from threading import Event
 
 import numpy as np
-import numba as nb
 from robots.battle import MultiBattle
-
 from utils import discount_with_dones
 
 
@@ -15,13 +13,30 @@ class Memory(object):
         self.mb_actions = []
         self.mb_values = []
         self.mb_dones = []
+        self.mb_states = []
+        self.mb_neglogpac = []
 
-    def append(self, obs, rewards, actions, values, dones):
-        self.mb_obs.append(obs)
-        self.mb_rewards.append(rewards)
-        self.mb_actions.append(actions)
-        self.mb_values.append(values)
-        self.mb_dones.append(dones)
+    def append(
+        self,
+        obs=None,
+        rewards=None,
+        actions=None,
+        values=None,
+        dones=None,
+        neglogpac=None,
+    ):
+        if obs is not None:
+            self.mb_obs.append(obs)
+        if rewards is not None:
+            self.mb_rewards.append(rewards)
+        if actions is not None:
+            self.mb_actions.append(actions)
+        if values is not None:
+            self.mb_values.append(values)
+        if dones is not None:
+            self.mb_dones.append(dones)
+        if neglogpac is not None:
+            self.mb_neglogpac.append(neglogpac)
 
     def clear(self):
         self.mb_obs = []
@@ -29,10 +44,12 @@ class Memory(object):
         self.mb_actions = []
         self.mb_values = []
         self.mb_dones = []
+        self.mb_states = []
+        self.mb_neglogpac = []
 
 
 class Runner(object):
-    def __init__(self, env, model, train_steps=50, render=False):
+    def __init__(self, env, model, train_steps, render=False):
         self.model = model
         self.memory = None
         self.train_steps = train_steps
@@ -43,6 +60,8 @@ class Runner(object):
         self.env = env
         self.robots = env.robots
         self.render = render
+        self.states = self.model.initial_state
+
         self.should_stop = Event()
 
     def prepare(self):
@@ -51,17 +70,21 @@ class Runner(object):
         mb_actions = np.asarray(self.memory.mb_actions, dtype="float32").swapaxes(1, 0)
         mb_values = np.asarray(self.memory.mb_values, dtype="float32").swapaxes(1, 0)
         mb_dones = np.asarray(self.memory.mb_dones, dtype=np.bool).swapaxes(1, 0)
+        mb_neglogpacs = np.asarray(self.memory.mb_neglogpac, dtype=np.float32).swapaxes(1, 0).reshape(-1)
+        mb_states = self.memory.mb_states
         mb_masks = mb_dones[:, :-1]
         mb_dones = mb_dones[:, 1:]
 
         if self.gamma > 0.0:
             # Discount/bootstrap off value fn
-            last_values = self.model.get_value(self.obs).flatten().tolist()
+            last_values = self.model.value(self.obs, S=self.states, M=self.dones).flatten().tolist()
             for n, (rewards, dones, value) in enumerate(zip(mb_rewards, mb_dones, last_values)):
                 # rewards = rewards.tolist()
                 # dones = dones.tolist()
                 if dones[-1] == 0:
-                    rewards = discount_with_dones(np.array(rewards.tolist() + [value]), np.array(dones.tolist() + [0]), self.gamma)[:-1]
+                    rewards = discount_with_dones(
+                        np.array(rewards.tolist() + [value]), np.array(dones.tolist() + [0]), self.gamma
+                    )[:-1]
                 else:
                     rewards = discount_with_dones(rewards, dones, self.gamma)
 
@@ -70,46 +93,54 @@ class Runner(object):
         mb_rewards = mb_rewards.flatten()
         mb_values = mb_values.flatten()
         mb_masks = mb_masks.flatten()
-        return mb_obs, None, mb_rewards, mb_masks, mb_actions, mb_values
+        return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values, mb_neglogpacs
 
     def run(self):
         self.memory = Memory()
         self.obs = self.env.get_obs()
         self.dones = self.env.get_dones()
+        # Oddly the state is reset inside of the lstm that is used on Done.
+        self.memory.mb_states = self.states
 
         for i in range(self.train_steps):
-            actions, values = self.model.run(obs=self.obs)
+            actions, values, states, neglogpac = self.model.step(self.obs, S=self.states, M=self.dones)
             obs, rewards, dones = self.env.step(actions)
             # Why is this copy(obs)
-
-            self.memory.append(np.copy(self.obs), rewards, actions, values, self.dones)
+            self.memory.append(np.copy(self.obs), rewards, actions, values, self.dones, neglogpac)
             self.obs = obs
             self.dones = dones
+            self.states = states
+
         self.memory.mb_dones.append(self.dones)
         return self.prepare()
 
     def test(self, simrate=30):
         self.obs = self.env.get_obs()
+        self.dones = self.env.get_dones()
         interval = 1 / simrate
         last_sim = 0
         while not self.should_stop.is_set():
             if (time.time() - last_sim) >= interval:
-                actions, values = self.model.test(obs=self.obs)
+                actions, values, states, _ = self.model.test(self.obs, S=self.states, M=self.dones)
                 obs, rewards, dones = self.env.step(actions=actions)
+                print(actions.flatten(), self.obs.flatten())
                 self.obs = obs
+                self.dones = dones
+                self.states = states
+                last_sim = time.time()
 
     def train(self):
         for update in range(1, 100000):
             t = time.time()
-            obs, states, rewards, masks, actions, values = self.run()
+            obs, states, rewards, masks, actions, values, neglogpac = self.run()
             t = time.time() - t
-            res = self.model.train(obs, None, rewards, None, actions, values)
+            res = self.model.train(obs, states, rewards, masks, actions, values, neglogpac, 0.2)
             print(
                 self.iteration,
                 "reward:",
-                round(rewards.mean(), 3),
+                round(rewards.mean(), 5),
                 "critic:",
-                round(res["vf_loss"].mean(), 3),
+                round(res["value_loss"].mean(), 5),
                 "fps:",
                 self.train_steps / t,
                 "samples:",
@@ -133,13 +164,31 @@ class Env(MultiBattle):
         return np.stack([robot.get_obs() for robot in self.all_robots])
 
     def get_rewards(self):
-        return np.stack([robot.energy for robot in self.all_robots]) - self.previous_energies
+        return np.stack([robot.energy - robot.previous_energy for robot in self.all_robots])
 
     def get_dones(self):
         return np.stack([robot.get_done() for robot in self.all_robots])
 
     def delta(self, actions=None):
+        """
+        Returns observations, rewards, dones after running the previous actions
+        """
         self.previous_energies = np.stack([robot.energy for robot in self.all_robots])
+        # Tick all robots
         for i, robot in enumerate(self.all_robots):
             robot.delta(self.tick, actions[i])
-        return self.get_obs(), self.get_rewards(), self.get_dones()
+
+        # TODO figure out how to do this before reset
+        # # Give a reward for winning
+        # for battle in self.battles:
+        #     if battle.check_round_over():
+        #         for robot in battle.robots:
+        #             if not robot.dead:
+        #                 robot.energy += 100
+
+        rewards = self.get_rewards()
+        for robot in self.all_robots:
+            robot.previous_energy = robot.energy
+            robot.energy -= 0.01
+
+        return self.get_obs(), rewards, self.get_dones()

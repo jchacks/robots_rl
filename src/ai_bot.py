@@ -1,13 +1,9 @@
-import os
-
 import numba as nb
 import numpy as np
 from robots import SignalRobot
 from robots.robot.utils import Turn
 
 np.set_printoptions(precision=3, suppress=True, linewidth=250)
-
-os.chdir("../robocode_robot")
 
 
 def indexer(length, window, step=1):
@@ -27,10 +23,11 @@ class AiRobot(SignalRobot):
         self.buffer = None
         self.records = []
         self.scan = None
+        self.previous_energy = None
 
-    def delta(self, *args):
-        super(AiRobot, self).delta(*args)
-        return (self.get_obs(),)
+    def reset(self):
+        super(SignalRobot, self).reset()
+        self.previous_energy = 100
 
     def on_init(self):
         super(AiRobot, self).on_init()
@@ -81,6 +78,13 @@ class AiRobot(SignalRobot):
         # else:
         #     self.turning = Turn.NONE
         # Turn Gun
+
+        # # Would be interesting to try
+        # opt = [Turn.Right, Turn.LEFT, Turn.NONE]
+        # idx = action[0].argmax()
+        #
+        # self.gun.turning = opt[idx]
+        #
         if action[0] > 0.001:
             self.gun.turning = Turn.RIGHT
         elif action[0] < -0.001:

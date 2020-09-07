@@ -9,15 +9,26 @@ import tensorflow_probability as tfp
 print(tf.__version__, tfp.__version__)
 tf.disable_v2_behavior()
 
-__all__ = ['tf', 'tfp', 'add_to_collection', 'lstm', 'fully', 'conv1d', 'dropout', 'FeedFetch', 'mish', 'discount_with_dones']
+__all__ = [
+    "tf",
+    "tfp",
+    "add_to_collection",
+    "lstm",
+    "fully",
+    "conv1d",
+    "dropout",
+    "FeedFetch",
+    "mish",
+    "discount_with_dones",
+]
 
 logger = logging.getLogger(__name__)
 
-FeedFetch = namedtuple('FeedFetch', ['feed', 'fetch'])
+FeedFetch = namedtuple("FeedFetch", ["feed", "fetch"])
 
 
 class OrnsteinUhlenbeckActionNoise:
-    def __init__(self, mu, sigma=0.3, theta=.15, dt=1e-2, x0=None):
+    def __init__(self, mu, sigma=0.3, theta=0.15, dt=1e-2, x0=None):
         self.theta = theta
         self.mu = mu
         self.sigma = sigma
@@ -26,8 +37,11 @@ class OrnsteinUhlenbeckActionNoise:
         self.reset()
 
     def __call__(self):
-        x = self.x_prev + self.theta * (self.mu - self.x_prev) * self.dt + \
-            self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
+        x = (
+            self.x_prev
+            + self.theta * (self.mu - self.x_prev) * self.dt
+            + self.sigma * np.sqrt(self.dt) * np.random.normal(size=self.mu.shape)
+        )
         self.x_prev = x
         return x
 
@@ -35,7 +49,7 @@ class OrnsteinUhlenbeckActionNoise:
         self.x_prev = self.x0 if self.x0 is not None else np.zeros_like(self.mu)
 
     def __repr__(self):
-        return 'OrnsteinUhlenbeckActionNoise(mu={}, sigma={})'.format(self.mu, self.sigma)
+        return "OrnsteinUhlenbeckActionNoise(mu={}, sigma={})".format(self.mu, self.sigma)
 
 
 def add_to_collection(name, tensors):
@@ -43,66 +57,104 @@ def add_to_collection(name, tensors):
         tf.add_to_collection(name, t)
 
 
-def lstm(inp, sequence, layers, name=None, reg=False, summary=False):
-    assert name is not None, "'name' cannot be None"
-    with tf.variable_scope(name + '_lstm'):
-        inp_shape = inp.get_shape()
-        inp_shape_t = tf.shape(inp)
-        batch_size = inp_shape_t[0]
-        steps = inp_shape[1]
-        logger.info("Constructing lstm %s; layers: %s, steps: %s" % (name, layers, steps))
-
-        if len(layers) > 1:
-            cells = [tf.contrib.rnn.BasicLSTMCell(shape) for shape in layers]
-            lstm_cell = tf.contrib.rnn.MultiRNNCell(cells)
+def ortho_init(scale=1.0):
+    def _ortho_init(shape, dtype, partition_info=None):
+        # lasagne ortho init for tf
+        shape = tuple(shape)
+        if len(shape) == 2:
+            flat_shape = shape
+        elif len(shape) == 4:  # assumes NHWC
+            flat_shape = (np.prod(shape[:-1]), shape[-1])
         else:
-            lstm_cell = tf.contrib.rnn.BasicLSTMCell(layers[0])
+            raise NotImplementedError
+        a = np.random.normal(0.0, 1.0, flat_shape)
+        u, _, v = np.linalg.svd(a, full_matrices=False)
+        q = u if u.shape == flat_shape else v  # pick the one with the correct shape
+        q = q.reshape(shape)
+        return (scale * q[: shape[0], : shape[1]]).astype(np.float32)
 
-        weights = [v for v in lstm_cell.variables if 'kernal' in v.name]
-        if summary:
-            tf.summary.scalar('lsmt_weights_abs', tf.reduce_mean(tf.abs(weights)))
-
-        if reg:
-            tf.add_to_collection('lstm_weights', weights)
-
-        state = lstm_cell.zero_state(batch_size=batch_size, dtype=tf.float32)
-        outputs = [tf.zeros(shape=(batch_size, layers[-1]), dtype=tf.float32)]
-
-        for time_step in range(steps):
-            cell_output, state = lstm_cell(inp[:, time_step, :], state)
-            outputs.append(cell_output)
-
-        with tf.variable_scope('output'):
-            outputs = tf.stack(outputs)
-            lstm_output = tf.gather_nd(tf.transpose(outputs, [1, 0, 2]),
-                                       tf.stack((tf.range(batch_size), sequence), axis=1))
-            tf.summary.histogram('lstm_out', lstm_output)
-    return lstm_output
+    return _ortho_init
 
 
-def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shapes=False, scope=None, activation=None,
-          w_init=(0, .01), **other_kwargs):
+def batch_to_seq(h, nbatch, nsteps, flat=False):
+    if flat:
+        h = tf.reshape(h, [nbatch, nsteps])
+    else:
+        h = tf.reshape(h, [nbatch, nsteps, -1])
+    return [tf.squeeze(v, [1]) for v in tf.split(axis=1, num_or_size_splits=nsteps, value=h)]
+
+
+def seq_to_batch(h, flat=False):
+    shape = h[0].get_shape().as_list()
+    if not flat:
+        assert len(shape) > 1
+        nh = h[0].get_shape()[-1].value
+        return tf.reshape(tf.concat(axis=1, values=h), [-1, nh])
+    else:
+        return tf.reshape(tf.stack(values=h, axis=1), [-1])
+
+
+def lstm(xs, ms, s, scope, nh, init_scale=1.0):
+    nbatch, nin = [v.value for v in xs[0].get_shape()]
+    with tf.variable_scope(scope):
+        wx = tf.get_variable("wx", [nin, nh * 4], initializer=ortho_init(init_scale))
+        wh = tf.get_variable("wh", [nh, nh * 4], initializer=ortho_init(init_scale))
+        b = tf.get_variable("b", [nh * 4], initializer=tf.constant_initializer(0.0))
+
+    # Split the state and output
+    c, h = tf.split(axis=1, num_or_size_splits=2, value=s)
+    for idx, (x, m) in enumerate(zip(xs, ms)):
+        # Mask the state and output
+        c = c * (1 - m)
+        h = h * (1 - m)
+        z = tf.matmul(x, wx) + tf.matmul(h, wh) + b
+        i, f, o, u = tf.split(axis=1, num_or_size_splits=4, value=z)
+        i = tf.nn.sigmoid(i)
+        f = tf.nn.sigmoid(f)
+        o = tf.nn.sigmoid(o)
+        u = tf.tanh(u)
+        c = f * c + i * u
+        h = o * tf.tanh(c)
+        xs[idx] = h
+    s = tf.concat(axis=1, values=[c, h])
+    return xs, s
+
+
+def fully(
+    inp,
+    out_size,
+    summary_w=False,
+    summary_b=False,
+    reg=False,
+    infer_shapes=False,
+    scope=None,
+    activation=None,
+    w_init=(0, 0.01),
+    **other_kwargs
+):
     assert scope is not None, "'scope' must be given"
     for k, v in other_kwargs.items():
-        logger.warning('Kwarg %s: %s, is not valid and will be ignored.' % (k, v))
+        logger.warning("Kwarg %s: %s, is not valid and will be ignored." % (k, v))
 
     activation_name = activation.__name__ if activation else None
-    logger.info("Constructing full layer \'%s\'; inp: %s, out_size: %s, activation: %s" %
-                (scope, inp.name, out_size, activation_name))
+    logger.info(
+        "Constructing full layer '%s'; inp: %s, out_size: %s, activation: %s"
+        % (scope, inp.name, out_size, activation_name)
+    )
 
     with tf.variable_scope("full_layer_%s" % scope):
         inp_shape = inp.get_shape()
         inp_shape_t = tf.shape(inp)
 
-        w = tf.get_variable('w', shape=(inp_shape[-1], out_size), initializer=tf.initializers.random_normal(*w_init))
-        b = tf.get_variable('b', shape=(out_size,), initializer=tf.zeros_initializer())
+        w = tf.get_variable("w", shape=(inp_shape[-1], out_size), initializer=tf.initializers.random_normal(*w_init))
+        b = tf.get_variable("b", shape=(out_size,), initializer=tf.zeros_initializer())
         if reg:
-            tf.add_to_collection('full_weights', w)
+            tf.add_to_collection("full_weights", w)
 
         if summary_w:
-            tf.summary.histogram('w', w)
+            tf.summary.histogram("w", w)
         if summary_b:
-            tf.summary.histogram('b', b)
+            tf.summary.histogram("b", b)
 
         if infer_shapes:
             logger.debug("Infer Shapes: inp shape %s" % (tuple(inp.get_shape()),))
@@ -114,7 +166,7 @@ def fully(inp, out_size, summary_w=False, summary_b=False, reg=False, infer_shap
             out = tf.matmul(inp, w) + b
 
         if activation is None:
-            logger.warning("No activation function applied to full layer \'%s\'" % (scope,))
+            logger.warning("No activation function applied to full layer '%s'" % (scope,))
         else:
             out = activation(out)
 
@@ -134,14 +186,16 @@ def mish(x):
 def conv1d(inp, out_size, width=4, stride=2, scope=None, activation=None):
     assert scope is not None, "'scope' must be given"
     logger.info(
-        "Constructing conv1d layer; inp: %s, out_size: %s, width: %s, stride: %s" % (inp.name, out_size, width, stride))
-    with tf.variable_scope('conv1d_%s' % scope):
-        w = tf.get_variable("w", (width, inp.get_shape()[-1], out_size),
-                            initializer=tf.initializers.random_uniform(-.1, .1))
+        "Constructing conv1d layer; inp: %s, out_size: %s, width: %s, stride: %s" % (inp.name, out_size, width, stride)
+    )
+    with tf.variable_scope("conv1d_%s" % scope):
+        w = tf.get_variable(
+            "w", (width, inp.get_shape()[-1], out_size), initializer=tf.initializers.random_uniform(-0.1, 0.1)
+        )
         out = tf.nn.conv1d(inp, w, stride=stride, padding="SAME")
 
         if activation is None:
-            logger.warning("No activation function applied to conv1d layer \'%s\'" % (scope,))
+            logger.warning("No activation function applied to conv1d layer '%s'" % (scope,))
         else:
             out = activation(out)
         return out
@@ -153,11 +207,12 @@ def dropout(inp, pctg, training=True):
     else:
         return inp
 
+
 @nb.njit()
 def discount_with_dones(rewards, dones, gamma):
     discounted = []
     r = 0
     for reward, done in zip(rewards[::-1], dones[::-1]):
-        r = reward + gamma * r * (1. - done)  # fixed off by one bug
+        r = reward + gamma * r * (1.0 - done)  # fixed off by one bug
         discounted.append(r)
     return discounted[::-1]

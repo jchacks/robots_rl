@@ -45,6 +45,7 @@ for i in range(100):
     eng.init()
     memory = {r: Memory('rewards,a_moving,a_turning,a_shoot,values,obs,dones') for r in robots}
     steps = 0
+    total_reward = {r:0 for r in robots}
     while not eng.is_finished():
         if render:
             app.step()
@@ -70,8 +71,10 @@ for i in range(100):
 
         # Add to each robots memory
         for i, robot in enumerate(robots):
+            reward = robot.energy-robot.previous_energy
+            total_reward[robot] += reward
             memory[robot].append(
-                rewards=robot.energy-robot.previous_energy,
+                rewards=reward,
                 a_moving=moving[i],
                 a_turning=turning[i],
                 a_shoot=shoot[i],
@@ -113,4 +116,4 @@ for i in range(100):
             b_obs = tf.concat(b_obs, axis=0)
 
             losses = model.train(b_obs, b_rewards, (b_moving, b_turning, b_shoot), b_values)
-            print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]}")
+            print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]}, Reward: {total_reward}")

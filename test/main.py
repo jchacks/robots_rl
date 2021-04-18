@@ -1,97 +1,116 @@
-from robots.config import BattleSettings
-from robots.app import App, Battle
-from robots.robot import Robot
-from robots.robot.utils import *
+from robots.app import App
 from robots.engine import Engine
-import random
+from robots.robot.utils import *
 import model
 import numpy as np
 import tensorflow as tf
 import tqdm
-
+from wrapper import Dummy, AITrainingBattle
+from utils import Memory
 
 turning_opts = [Turn.LEFT, Turn.NONE, Turn.RIGHT]
 moving_opts = [Move.FORWARD, Move.NONE, Move.BACK]
 
-class RLRobot(Robot):
-    def run(self):
+robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
+size = (600, 400)
 
-        pass
-        # if random.random() > 0.5:
-        #     self.moving = Move.FORWARD
-        # else:
-        #     self.moving = Move.BACK
-
-        # if random.random() > 0.5:
-        #     self.base_turning = Turn.LEFT
-        # else:
-        #     self.base_turning = Turn.RIGHT
-
-        # if random.random() > 0.5:
-        #     self.gun_turning = Turn.LEFT
-        # else:
-        #     self.gun_turning = Turn.RIGHT
-
-        # if random.random() > 0.5:
-        #     self.turret_turning = Turn.LEFT
-        # else:
-        #     self.turret_turning = Turn.RIGHT
-
-        # if random.randint(0, 1):
-        #     self.fire(random.randint(1, 3))
+render = True
+if render:
+    app = App()
+    battle = AITrainingBattle(robots, size)
+    app.child = battle
+    # Use the eng create by battle
+    eng = battle.eng
+else:
+    eng = Engine(robots, size)
 
 
-battle_settings = BattleSettings([
-    RLRobot((255, 0, 0)),
-    RLRobot((0, 255, 0))])
-eng = Engine(battle_settings)
+def get_obs(r):
+    direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
+    return tf.cast(tf.concat([[r.energy/100, r.turret_heat/30], direction, r.position/(600, 400)], axis=0), tf.float32)
 
 
-def get_obs(eng):
-    return {
-        'energy': [r.energy for r in eng.robots],
-        'positions': [r.position for r in eng.robots],
-        'done': eng.is_finished()
-    }
+def discounted(rewards, dones, gamma=0.9):
+    discounted = []
+    r = 0
+    for reward, done in zip(rewards[::-1], dones[::-1]):
+        r = reward + gamma * r * (1.0 - done)
+        discounted.append(r)
+    return discounted[::-1]
 
 
-def get_rewards(obs):
-    return [np.all(pos < 50) for pos in obs['positions']]
-
-
-eng.init()
+max_steps = 1000
 for i in range(100):
-    rewards = []
-    a_moving = []
-    a_turning = []
-    values = []
-    observations = []
-    for i in tqdm.tqdm(range(1000)):
-        obs = get_obs(eng)
-        rewards.append(get_rewards(obs))
-        observations.append(obs)
-        moving, turning = model.actor.sample(tf.stack(obs['positions'])/(600, 400))
-        value = model.critic(tf.stack(obs['positions'])).numpy()
-        values.append(value)
-        a_moving.append(moving)
-        a_turning.append(turning)
+    # Create a memory per player
+    eng.init()
+    memory = {r: Memory('rewards,a_moving,a_turning,a_shoot,values,obs,dones') for r in robots}
+    steps = 0
+    while not eng.is_finished():
+        if render:
+            app.step()
 
-        for robot, move, turn in zip(
-            battle_settings.robots, 
-            moving, 
-            turning):
-            robot.moving = moving_opts[move]
-            robot.turning = turning_opts[turn]
+        obs = [get_obs(r) for r in robots]
+        obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
+        obs_batch = tf.stack(obs)
+        moving, turning, shoot = model.actor.sample(obs_batch)
+        shoot = shoot.numpy()
+        value = model.critic(obs_batch).numpy()
+
+        for i, robot in enumerate(robots):
+            # Apply actions
+            if robot.turret_heat > 0:
+                shoot[i] = 0
+            robot.moving = moving_opts[moving[i]]
+            robot.base_turning = turning_opts[turning[i]]
+            robot.should_fire = shoot[i]
+            robot.previous_energy = robot.energy
+
         eng.step()
-        if eng.is_finished():
-            eng.init()
+        steps += 1
 
-    rewards = tf.concat(rewards, axis=0)[:,tf.newaxis]
+        # Add to each robots memory
+        for i, robot in enumerate(robots):
+            memory[robot].append(
+                rewards=robot.energy-robot.previous_energy,
+                a_moving=moving[i],
+                a_turning=turning[i],
+                a_shoot=shoot[i],
+                values=value[i],
+                obs=obs[i],
+                dones=eng.is_finished()
+            )
 
-    a_moving = tf.concat(a_moving, axis=0)
-    a_turning = tf.concat(a_turning, axis=0)
+        if eng.is_finished() or (steps % max_steps == 0):
+            steps = 0
+            obs = [get_obs(r) for r in robots]
+            obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
+            obs_batch = tf.stack(obs)
+            last_values = model.critic(obs_batch).numpy()
 
-    values = tf.concat(values, axis=0)
-    observations = tf.concat([o['positions'] for o in observations], axis=0)/(600, 400)
-    losses = model.train(observations, rewards, (a_moving, a_turning), values)
-    print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]}")
+            b_rewards = []
+            b_moving = []
+            b_turning = []
+            b_shoot = []
+            b_values = []
+            b_obs = []
+
+            for robot, last_value in zip(robots, last_values):
+                mem = memory[robot]
+                b_rewards.append(discounted(np.array(mem['rewards'] + last_value), np.array(mem['dones'] + [0])))
+                b_moving.append(mem['a_moving'])
+                b_turning.append(mem['a_turning'])
+                b_shoot.append(mem['a_shoot'])
+                b_values.append(mem['values'])
+                b_obs.append(mem['obs'])
+
+            b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
+
+            b_moving = tf.concat(b_moving, axis=0)
+            b_turning = tf.concat(b_turning, axis=0)
+            b_shoot = tf.concat(b_shoot, axis=0)
+
+            b_values = tf.concat(b_values, axis=0)
+            b_obs = tf.concat(b_obs, axis=0)
+
+            losses = model.train(b_obs, b_rewards, (b_moving, b_turning, b_shoot), b_values)
+            print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]}")

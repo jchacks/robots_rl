@@ -11,10 +11,12 @@ class Critic(tf.Module):
     def __init__(self, name='critic') -> None:
         super().__init__(name=name)
         self.d1 = layers.Dense(100, activation='relu')
-        self.o = layers.Dense(1, activation='relu')
+        self.d2 = layers.Dense(100, activation='relu')
+        self.o = layers.Dense(1)
 
     def __call__(self, obs):
         latent = self.d1(obs)
+        latent = self.d2(latent)
         value = self.o(latent)
         return value
 
@@ -23,33 +25,45 @@ class Actor(tf.Module):
     def __init__(self, name='actor'):
         super().__init__(name=name)
         self.d1 = layers.Dense(100, activation='relu')
+        self.d2 = layers.Dense(100, activation='relu')
         self.moving = layers.Dense(3, activation='softmax')
         self.turning = layers.Dense(3, activation='softmax')
+        self.shoot = layers.Dense(2, activation='softmax')
 
     def __call__(self, obs):
         latent = self.d1(obs)
+        latent = self.d2(latent)
 
         moving = self.moving(latent)
         turning = self.turning(latent)
-        return moving, turning
+        shoot = self.shoot(latent)
+        return moving, turning, shoot
 
     def sample(self, obs):
-        moving, turning = self(obs)
+        moving, turning, shoot = self(obs)
         pd_moving = distributions.Categorical(probs=moving)
         pd_turning = distributions.Categorical(probs=turning)
-        return pd_moving.sample(), pd_turning.sample()
+        pd_shoot = distributions.Categorical(probs=shoot)
+        return pd_moving.sample(), pd_turning.sample(), pd_shoot.sample()
 
-
-def actor_loss(advantage, actions, pds):
-    a_moving, a_turning = actions
-    pd_moving, pd_turning = pds
-    log_prob = pd_moving.log_prob(a_moving) + pd_turning.log_prob(a_turning)
-    # I am not sure what the correct combination is mb adding them together?
-    return -advantage * log_prob[:, tf.newaxis]
-
+    def log_prob(self, obs, actions):
+        amoving, aturning, ashoot = actions
+        moving, turning, shoot = self(obs)
+        pd_moving = distributions.Categorical(probs=moving)
+        pd_turning = distributions.Categorical(probs=turning)
+        pd_shoot = distributions.Categorical(probs=shoot)
+        return (pd_moving.log_prob(amoving),
+                pd_turning.log_prob(aturning),
+                pd_shoot.log_prob(ashoot))
 
 actor = Actor()
 critic = Critic()
+
+
+def actor_loss(advantage, actions, observations):
+    log_probs = actor.log_prob(observations, actions)
+    # I am not sure what the correct combination is mb adding them together?
+    return -advantage * tf.reduce_sum(log_probs, axis=0)[:, tf.newaxis]
 
 
 def train(observations, rewards, actions, values, norm_advs=False):
@@ -69,15 +83,10 @@ def train(observations, rewards, actions, values, norm_advs=False):
         advs = (advs - advs.mean()) / (advs.std() + 1e-8)
 
     with tf.GradientTape() as tape:
-        moving, turning = actor(observations)
-
         # Probabilities have to be done here as they need variable batch size
-        pd_moving = distributions.Categorical(probs=moving)
-        pd_turning = distributions.Categorical(probs=turning)
-
         vpred = critic(observations)
 
-        alosses = actor_loss(advs, actions, (pd_moving, pd_turning))
+        alosses = actor_loss(advs, actions, observations)
         aloss = tf.reduce_mean(alosses)
 
         # Value function loss

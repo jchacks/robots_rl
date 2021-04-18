@@ -116,4 +116,4 @@ for i in range(100):
             b_obs = tf.concat(b_obs, axis=0)
 
             losses = model.train(b_obs, b_rewards, (b_moving, b_turning, b_shoot), b_values)
-            print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]}, Reward: {total_reward}")
+            print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]}, Reward: {total_reward.values()}")

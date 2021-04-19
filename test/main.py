@@ -106,7 +106,7 @@ def train(memory):
     losses = model.train(b_obs, b_rewards, b_action, b_values)
     if np.isnan(losses[0].numpy()):
         raise RuntimeError
-    print(f"{losses[0]}, Actor: {losses[1]}, Critic: {losses[2]},  Entropy: {losses[3]}")
+    return losses
 
 
 eng.init()
@@ -159,9 +159,12 @@ for iteration in range(10000):
         if eng.is_finished():
             print(f"Reward: {list(total_reward.values())}")
             total_reward = {r: 0 for r in robots}
-            # Episode is over so test
+            # Episode is over so test every 10th
             if iteration % 10 == 0:
                 test()
             eng.init()
 
-    train(memory)
+    losses = train(memory)
+    print(f"{iteration}: {losses[0]}, "
+          f"Actor: {losses[1]}, Critic: {losses[2]}, "
+          f"Entropy: {losses[3]}")

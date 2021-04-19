@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions
 
-optimiser = tf.keras.optimizers.Adam(learning_rate=7e-4, beta_1=0.5, epsilon=1e-5)
+optimiser = tf.keras.optimizers.Adam(learning_rate=9e-4, beta_1=0.5, epsilon=1e-5)
 
 
 class Critic(tf.Module):
@@ -94,7 +94,7 @@ def train(observations, rewards, actions, values, norm_advs=False, print_grads=F
         c_loss = tf.reduce_mean(c_losses)
 
         entropy_reg = tf.reduce_mean(pd.entropy())
-        loss = a_loss + c_loss - entropy_reg * 0.3
+        loss = a_loss + c_loss - entropy_reg * 0.5
 
     training_variables = tape.watched_variables()
     grads = tape.gradient(loss, training_variables)

@@ -32,7 +32,7 @@ class Actor(tf.Module):
         self.d1 = layers.Dense(100, activation='relu')
         self.d2 = layers.Dense(256, activation='relu')
         self.d3 = layers.Dense(256, activation='relu')
-        self.d4 = layers.Dense(64, activation='relu')
+        self.d4 = layers.Dense(256, activation='relu')
         # self.moving = layers.Dense(3, activation='softmax')
         self.turning = layers.Dense(3, activation='softmax')
         self.shoot = layers.Dense(2, activation='softmax')
@@ -116,4 +116,4 @@ def train(observations, rewards, actions, values, norm_advs=False):
     grads = tape.gradient(loss, variables)
     grads_and_vars = zip(grads, variables)
     optimiser.apply_gradients(grads_and_vars)
-    return loss, a_loss, c_loss, entropy_reg
+    return loss, a_loss, c_loss, entropy_reg, tf.reduce_mean([tf.reduce_mean(g) for g in grads])

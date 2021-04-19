@@ -64,10 +64,14 @@ for i in range(10000):
             # Apply actions
             if robot.turret_heat > 0:
                 shoot[i] = 0
-            # robot.moving = moving_opts[moving[i]]
-            robot.base_turning = turning_opts[turning[i]]
-            robot.should_fire = shoot[i]
-            robot.previous_energy = robot.energy
+            try:
+                # robot.moving = moving_opts[moving[i]]
+                robot.base_turning = turning_opts[turning[i]]
+                robot.should_fire = shoot[i]
+                robot.previous_energy = robot.energy
+            except Exception:
+                print("Failed assigning actions", i, turning[i], shoot[i])
+                raise
 
         eng.step()
         steps += 1
@@ -119,4 +123,6 @@ for i in range(10000):
             b_obs = tf.concat(b_obs, axis=0)
 
             losses = model.train(b_obs, b_rewards, (b_moving, b_turning, b_shoot), b_values)
+            if np.isnan(losses[0].numpy()):
+                raise RuntimeError
             print(f"Total: {losses[0]}, Actor: {losses[1]}, Critic: {losses[2]},  Entropy: {losses[3]}, Reward: {total_reward.values()}")

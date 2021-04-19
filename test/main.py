@@ -26,12 +26,15 @@ else:
     eng = Engine(robots, size)
 
 # Simplify battles
-eng.bullet_self_collisions = False
+eng.bullet_collisions_enabled = False
+eng.gun_heat_enabled = False
 
 def get_obs(r):
     direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
     return tf.cast(tf.concat([[r.energy/100, r.turret_heat/30], direction, r.position/size], axis=0), tf.float32)
 
+def get_position(r):
+    return tf.cast(r.position/size, tf.float32)
 
 def discounted(rewards, dones, last_value, gamma=0.99):
     discounted = []
@@ -39,7 +42,7 @@ def discounted(rewards, dones, last_value, gamma=0.99):
     for reward, done in zip(rewards[::-1], dones[::-1]):
         r = reward + gamma * r * (1.0 - done)
         discounted.append(r)
-    return discounted[::-1]
+    return np.concatenate(discounted[::-1])
 
 
 max_steps = 200
@@ -63,11 +66,11 @@ for i in range(10000):
         for i, robot in enumerate(robots):
             # Apply actions
             if robot.turret_heat > 0:
-                shoot[i] = 0
+                shoot[i] = -1
             try:
                 # robot.moving = moving_opts[moving[i]]
                 robot.base_turning = turning_opts[turning[i]]
-                robot.should_fire = shoot[i]
+                robot.should_fire = shoot[i] > 0
                 robot.previous_energy = robot.energy
             except Exception:
                 print("Failed assigning actions", i, turning[i], shoot[i])
@@ -113,7 +116,7 @@ for i in range(10000):
                 b_values.append(mem['values'])
                 b_obs.append(mem['obs'])
 
-            b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
+            b_rewards = tf.concat(b_rewards, axis=0)[:,tf.newaxis]
 
             # b_moving = tf.concat(b_moving, axis=0)
             b_turning = tf.concat(b_turning, axis=0)

@@ -10,12 +10,12 @@ from wrapper import Dummy, AITrainingBattle
 from utils import Memory, discounted
 import time
 
-turning_opts = [Turn.LEFT, Turn.NONE, Turn.RIGHT]
-moving_opts = [Move.FORWARD, Move.NONE, Move.BACK]
+TURNING = [Turn.LEFT, Turn.NONE, Turn.RIGHT]
+MOVING = [Move.FORWARD, Move.NONE, Move.BACK]
 
-
+ACTION_DIMS = (2, 3, 3, 3)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-size = (300, 300)
+size = (600, 600)
 
 
 render = True
@@ -34,12 +34,41 @@ eng.gun_heat_enabled = True
 
 
 def get_obs(r):
+    s = np.array(size)
+    center = s//2
+    position = (r.position//center) - 1
     direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
-    return tf.cast(tf.concat([[r.energy/100, r.turret_heat/30], direction, r.position/size], axis=0), tf.float32)
+    turret = np.sin(r.turret_bearing * np.pi / 180), np.cos(r.turret_bearing * np.pi / 180)
+    return tf.cast(tf.concat([
+        [(r.energy//50) - 1, r.turret_heat/30],
+        direction,
+        turret,
+        position
+    ], axis=0), tf.float32)
 
 
 def get_position(r):
     return tf.cast(r.position/size, tf.float32)
+
+
+def assign_actions(action):
+    for i, robot in enumerate(robots):
+        # Apply actions
+        # Dimension Size: Shoot = 2, Turning = 3, Move = 3, Turret = 3
+        shoot, turn, move, turret = np.unravel_index(action[i], ACTION_DIMS)
+        if robot.turret_heat > 0:
+            shoot = 0
+        try:
+            robot.moving = MOVING[move]
+            robot.base_turning = TURNING[turn]
+            robot.turret_turning = TURNING[turret]
+            robot.should_fire = shoot > 0
+            robot.previous_energy = robot.energy
+        except Exception:
+            print("Failed assigning actions", i, turn, shoot)
+            raise
+        # action[i] = np.ravel_multi_index((shoot, turn, move), ACTION_DIMS)
+    return action
 
 
 def test(max_steps=200):
@@ -56,24 +85,9 @@ def test(max_steps=200):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action = model.run(obs_batch)
+        action = model.run(obs_batch).numpy()
         value = critic(obs_batch).numpy()
-
-        for i, robot in enumerate(robots):
-            # Apply actions
-            # Dimension Size: Shoot = 2, Turning = 3
-            shoot, turning = np.unravel_index(action[i], (2, 3))
-            if robot.turret_heat > 0:
-                shoot = 0
-            try:
-                # robot.moving = moving_opts[moving[i]]
-                robot.base_turning = turning_opts[turning]
-                robot.should_fire = shoot > 0
-                robot.previous_energy = robot.energy
-            except Exception:
-                print("Failed assigning actions", i, turning, shoot)
-                raise
-
+        action = assign_actions(action)
         eng.step()
         step += 1
     eng.set_rate(-1)
@@ -93,7 +107,9 @@ def train(memory):
 
     for robot, last_value in zip(robots, last_values):
         mem = memory[robot]
-        b_rewards.append(discounted(np.array(mem['rewards']), np.array(mem['dones']), + last_value, 0.99))
+        b_rewards.append(
+            discounted(np.array(mem['rewards']),
+                       np.array(mem['dones']), + last_value, 0.9))
         b_action.append(mem['action'])
         b_values.append(mem['values'])
         b_obs.append(mem['obs'])
@@ -109,10 +125,13 @@ def train(memory):
     return losses
 
 
+DO_NOTHING_INDEX = np.ravel_multi_index((0, 1, 1, 1), ACTION_DIMS)
+# TODO Add random sizes
 eng.init()
 total_reward = {r: 0 for r in robots}
-max_steps = 100
-for iteration in range(10000):
+tests = 1
+max_steps = 400
+for iteration in range(1000000):
     # Create a memory per player
     memory = {r: Memory('rewards,action,values,obs,dones') for r in robots}
     steps = 0
@@ -123,30 +142,17 @@ for iteration in range(10000):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action = model.sample(obs_batch)
+        action = model.sample(obs_batch).numpy()
         value = critic(obs_batch).numpy()
-
-        for i, robot in enumerate(robots):
-            # Apply actions
-            # Dimension Size: Shoot = 2, Turning = 3
-            shoot, turning = np.unravel_index(action[i], (2, 3))
-            if robot.turret_heat > 0:
-                shoot = 0
-            try:
-                # robot.moving = moving_opts[moving[i]]
-                robot.base_turning = turning_opts[turning]
-                robot.should_fire = shoot > 0
-                robot.previous_energy = robot.energy
-            except Exception:
-                print("Failed assigning actions", i, turning, shoot)
-                raise
+        action = assign_actions(action)
 
         eng.step()
         steps += 1
 
         # Add to each robots memory
         for i, robot in enumerate(robots):
-            reward = robot.energy-robot.previous_energy
+            # penalty = 1 if action[i] == DO_NOTHING_INDEX else 0
+            reward = (robot.energy-robot.previous_energy) #- penalty
             total_reward[robot] += reward
             memory[robot].append(
                 rewards=reward,
@@ -160,11 +166,13 @@ for iteration in range(10000):
             print(f"Reward: {list(total_reward.values())}")
             total_reward = {r: 0 for r in robots}
             # Episode is over so test every 10th
-            if iteration % 10 == 0:
+            if iteration//10 > tests:
+                tests += 1
                 test()
             eng.init()
 
     losses = train(memory)
     print(f"{iteration}: {losses[0]}, "
           f"Actor: {losses[1]}, Critic: {losses[2]}, "
-          f"Entropy: {losses[3]}")
+          f"Entropy: {losses[3]}, "
+          f"Attention: {losses[4]}")

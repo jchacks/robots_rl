@@ -3,6 +3,11 @@ import operator
 import logging
 import tqdm
 import numpy as np
+from robots.robot.utils import *
+
+TURNING = [Turn.NONE, Turn.LEFT, Turn.RIGHT]
+MOVING = [Move.NONE, Move.FORWARD, Move.BACK]
+
 
 class TqdmLoggingHandler(logging.Handler):
     def __init__(self, level=logging.NOTSET):

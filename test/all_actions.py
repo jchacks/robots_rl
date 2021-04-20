@@ -2,20 +2,20 @@ from robots.app import App
 from robots.engine import Engine
 from robots.robot.utils import *
 import model
-from model import actor, critic
 import numpy as np
 import tensorflow as tf
-import tqdm
 from wrapper import Dummy, AITrainingBattle
-from utils import Memory, discounted
+from utils import Memory, discounted, TURNING, MOVING
 import time
 
-TURNING = [Turn.LEFT, Turn.NONE, Turn.RIGHT]
-MOVING = [Move.FORWARD, Move.NONE, Move.BACK]
 
 ACTION_DIMS = (2, 3, 3, 3)
+DO_NOTHING_INDEX = np.ravel_multi_index((0, 1, 1, 1), ACTION_DIMS)
+model.model = model.Model(2*3*3*3)
+
+
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-size = (600, 600)
+size = (300, 300)
 
 
 render = True
@@ -85,8 +85,7 @@ def test(max_steps=200):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action = model.run(obs_batch).numpy()
-        value = critic(obs_batch).numpy()
+        action, value = model.run(obs_batch)
         action = assign_actions(action)
         eng.step()
         step += 1
@@ -98,7 +97,7 @@ def train(memory):
     obs = [get_obs(r) for r in robots]
     obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
     obs_batch = tf.stack(obs)
-    last_values = model.critic(obs_batch).numpy()
+    _, last_values = model.run(obs_batch)
 
     b_rewards = []
     b_action = []
@@ -125,8 +124,8 @@ def train(memory):
     return losses
 
 
-DO_NOTHING_INDEX = np.ravel_multi_index((0, 1, 1, 1), ACTION_DIMS)
-# TODO Add random sizes
+
+
 eng.init()
 total_reward = {r: 0 for r in robots}
 tests = 1
@@ -142,8 +141,7 @@ for iteration in range(1000000):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action = model.sample(obs_batch).numpy()
-        value = critic(obs_batch).numpy()
+        action, value = model.sample(obs_batch)
         action = assign_actions(action)
 
         eng.step()
@@ -152,7 +150,9 @@ for iteration in range(1000000):
         # Add to each robots memory
         for i, robot in enumerate(robots):
             # penalty = 1 if action[i] == DO_NOTHING_INDEX else 0
-            reward = (robot.energy-robot.previous_energy) #- penalty
+            if eng.is_finished() and robot.energy > 0:
+                reward += 100
+            reward = (robot.energy-robot.previous_energy)  # - penalty
             total_reward[robot] += reward
             memory[robot].append(
                 rewards=reward,
@@ -162,7 +162,7 @@ for iteration in range(1000000):
                 dones=eng.is_finished()
             )
 
-        if eng.is_finished():
+        if eng.is_finished() or steps > 1000:
             print(f"Reward: {list(total_reward.values())}")
             total_reward = {r: 0 for r in robots}
             # Episode is over so test every 10th
@@ -175,4 +175,4 @@ for iteration in range(1000000):
     print(f"{iteration}: {losses[0]}, "
           f"Actor: {losses[1]}, Critic: {losses[2]}, "
           f"Entropy: {losses[3]}, "
-          f"Attention: {losses[4]}")
+          f"Advantage: {losses[4]}")

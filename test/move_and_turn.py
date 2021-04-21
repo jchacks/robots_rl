@@ -103,7 +103,9 @@ def train(memory):
 
     for robot, last_value in zip(robots, last_values):
         mem = memory[robot]
-        b_rewards.append(discounted(np.array(mem['rewards']), np.array(mem['dones']), + last_value, 0.99))
+        b_rewards.append(
+            discounted(np.array(mem['rewards']),
+                       np.array(mem['dones']), + last_value, 0.9))
         b_action.append(mem['action'])
         b_values.append(mem['values'])
         b_obs.append(mem['obs'])
@@ -113,10 +115,17 @@ def train(memory):
     b_values = tf.concat(b_values, axis=0)
     b_obs = tf.concat(b_obs, axis=0)
 
+    if np.mean(b_rewards > 0) < 0.05:
+        print("Skipping too few positives")
+        return
     losses = model.train(b_obs, b_rewards, b_action, b_values)
     if np.isnan(losses[0].numpy()):
         raise RuntimeError
-    return losses
+    print(f"{iteration}: {losses[0]}, "
+          f"Actor: {losses[1]}, Critic: {losses[2]}, "
+          f"Entropy: {losses[3]}, "
+          f"Advantage: {losses[4]}, "
+          f"Values: {losses[5]}")
 
 
 # TODO Add random sizes
@@ -143,10 +152,10 @@ for iteration in range(1000000):
 
         # Add to each robots memory
         for i, robot in enumerate(robots):
-            # penalty = 1 if action[i] == DO_NOTHING_INDEX else 0
-            reward = (robot.energy-robot.previous_energy)  # - penalty
+            reward = 0
             if eng.is_finished() and robot.energy > 0:
-                reward += 100
+                reward += 1
+            reward += (robot.energy-robot.previous_energy)/100
             total_reward[robot] += reward
             memory[robot].append(
                 rewards=reward,
@@ -165,8 +174,4 @@ for iteration in range(1000000):
                 test()
             eng.init()
 
-    losses = train(memory)
-    print(f"{iteration}: {losses[0]}, "
-          f"Actor: {losses[1]}, Critic: {losses[2]}, "
-          f"Entropy: {losses[3]}, "
-          f"Advantage: {losses[4]}")
+    train(memory)

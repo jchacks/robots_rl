@@ -1,8 +1,10 @@
+from numpy.lib.utils import deprecate
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers
 import tensorflow_probability as tfp
 from tensorflow_probability import distributions
+from distributions import MultiCategoricalProbabilityDistribution
 
 optimiser = tf.keras.optimizers.Adam(learning_rate=9e-4, beta_1=0.5, epsilon=1e-5)
 
@@ -26,10 +28,11 @@ class Critic(tf.Module):
 class Actor(tf.Module):
     def __init__(self, num_actions, name='actor'):
         super().__init__(name=name)
+        self.num_actions = num_actions
         self.d1 = layers.Dense(1024, activation='relu')
         self.d2 = layers.Dense(512, activation='relu')
         self.d3 = layers.Dense(512, activation='relu')
-        self.o = layers.Dense(num_actions, activation='softmax')
+        self.o = layers.Dense(num_actions)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
@@ -42,10 +45,13 @@ class Actor(tf.Module):
 class Model(tf.Module):
     def __init__(self, action_space, name='model'):
         super().__init__(name=name)
+        self.action_space = action_space
+        self.num_actions = np.sum(action_space)
+
         self.d1 = layers.Dense(1024, activation='relu')
         self.d2 = layers.Dense(1024, activation='relu')
         self.d3 = layers.Dense(512, activation='relu')
-        self.actor = Actor(action_space)
+        self.actor = Actor(self.num_actions)
         self.critic = Critic()
 
     @tf.Module.with_name_scope
@@ -54,6 +60,24 @@ class Model(tf.Module):
         latent = self.d2(latent)
         latent = self.d3(latent)
         return self.actor(latent), self.critic(latent)
+
+    def distribution(self, logits):
+        return MultiCategoricalProbabilityDistribution(self.action_space, logits)
+
+    def sample(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return dist.sample().numpy(), value.numpy()
+
+    def sample(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return dist.sample().numpy(), value.numpy()
+
+    def run(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return dist.mode().numpy(), value.numpy()
 
 
 model = None
@@ -87,9 +111,9 @@ def train(observations, rewards, actions, values, norm_advs=False, print_grads=F
         advantage = (advantage - tf.reduce_mean(advantage)) / (tf.math.reduce_std(advantage) + 1e-8)
 
     with tf.GradientTape() as tape:
-        probs, vpred = model(observations)
-        pd = distributions.Categorical(probs=probs)
-        a_losses = -advantage * pd.log_prob(actions)[:, tf.newaxis]
+        logits, vpred = model(observations)
+        pd = model.distribution(logits)
+        a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]
         a_loss = tf.reduce_mean(a_losses)
 
         # Value function loss
@@ -97,7 +121,7 @@ def train(observations, rewards, actions, values, norm_advs=False, print_grads=F
         c_loss = tf.reduce_mean(c_losses)
 
         entropy_reg = tf.reduce_mean(pd.entropy())
-        loss = a_loss + c_loss - entropy_reg * 0.05
+        loss = a_loss + c_loss * 0.5 - entropy_reg * 0.01
 
     training_variables = tape.watched_variables()
     grads = tape.gradient(loss, training_variables)

@@ -9,8 +9,7 @@ from utils import Memory, discounted, TURNING, MOVING
 import time
 
 ACTION_DIMS = (2, 3, 3)
-DO_NOTHING_INDEX = np.ravel_multi_index([0]*len(ACTION_DIMS), ACTION_DIMS)
-model.model = model.Model(2*3*3)
+model.model = model.Model(ACTION_DIMS)
 
 
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
@@ -52,8 +51,7 @@ def get_position(r):
 def assign_actions(action):
     for i, robot in enumerate(robots):
         # Apply actions
-        # Dimension Size: Shoot = 2, Turning = 3, Move = 3, Turret = 3
-        shoot, turn, move = np.unravel_index(action[i], ACTION_DIMS)
+        shoot, turn, move = action[i]
         if robot.turret_heat > 0:
             shoot = 0
         try:
@@ -64,7 +62,6 @@ def assign_actions(action):
         except Exception:
             print("Failed assigning actions", i, turn, shoot)
             raise
-        # action[i] = np.ravel_multi_index((shoot, turn, move), ACTION_DIMS)
     return action
 
 
@@ -82,7 +79,7 @@ def test(max_steps=200):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value = model.run(obs_batch)
+        action, value = model.model.run(obs_batch)
         action = assign_actions(action)
         eng.step()
         step += 1
@@ -94,7 +91,7 @@ def train(memory):
     obs = [get_obs(r) for r in robots]
     obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
     obs_batch = tf.stack(obs)
-    _, last_values = model.run(obs_batch)
+    _, last_values = model.model.run(obs_batch)
 
     b_rewards = []
     b_action = []
@@ -115,7 +112,7 @@ def train(memory):
     b_values = tf.concat(b_values, axis=0)
     b_obs = tf.concat(b_obs, axis=0)
 
-    if np.mean(b_rewards > 0) < 0.05:
+    if np.mean(b_rewards > 0) < 0.01:
         print("Skipping too few positives")
         return
     losses = model.train(b_obs, b_rewards, b_action, b_values)
@@ -144,7 +141,7 @@ for iteration in range(1000000):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value = model.sample(obs_batch)
+        action, value = model.model.sample(obs_batch)
         action = assign_actions(action)
 
         eng.step()

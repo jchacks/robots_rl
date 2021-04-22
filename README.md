@@ -5,10 +5,10 @@ It provides an environment with delayed rewards requiring, additions to classica
 
 _Robots package is going though an extensive rewrite and therefore makes alot of this redundant._
 
-#### How to use:
 
-Data collection script `collect_data.py` writes protobuff events to `./buffer/`.
-
-Training script collects rounds from `./buffer/` and feeds them to the model.
 
 ### Todo
+
+* Try to model the value network with a positive network side and a negative network side
+  Rational is that if a completely negative batch occurs then the network will be more robust.
+  Positive side wont train.

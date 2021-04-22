@@ -5,7 +5,7 @@ It provides an environment with delayed rewards requiring, additions to classica
 
 _Robots package is going though an extensive rewrite and therefore makes alot of this redundant._
 
-
+Checkout the run metrics on [wandb](https://wandb.ai/jchacks/robots_rl).
 
 ### Todo
 

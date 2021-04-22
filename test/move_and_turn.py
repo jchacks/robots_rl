@@ -7,6 +7,7 @@ import tensorflow as tf
 from wrapper import Dummy, AITrainingBattle
 from utils import Memory, discounted, TURNING, MOVING
 import time
+import matplotlib.pyplot as plt
 
 ACTION_DIMS = (2, 3, 3)
 model.model = model.Model(ACTION_DIMS)
@@ -112,9 +113,9 @@ def train(memory):
     b_values = tf.concat(b_values, axis=0)
     b_obs = tf.concat(b_obs, axis=0)
 
-    if np.mean(b_rewards > 0) < 0.01:
-        print("Skipping too few positives")
-        return
+    # if np.mean(b_rewards > 0) < 0.01:
+    #     print("Skipping too few positives")
+    #     return
     losses = model.train(b_obs, b_rewards, b_action, b_values)
     if np.isnan(losses[0].numpy()):
         raise RuntimeError
@@ -127,9 +128,10 @@ def train(memory):
 
 # TODO Add random sizes
 eng.init()
+rewards = []
 total_reward = {r: 0 for r in robots}
 tests = 1
-max_steps = 200
+max_steps = 50
 for iteration in range(1000000):
     # Create a memory per player
     memory = {r: Memory('rewards,action,values,obs,dones') for r in robots}
@@ -162,11 +164,15 @@ for iteration in range(1000000):
                 dones=eng.is_finished()
             )
 
-        if eng.is_finished():
-            print(f"Reward: {list(total_reward.values())}")
+        if eng.is_finished()  or steps > 1000:
+            rewards.append(np.mean(list(total_reward.values())))
+            plt.plot(rewards)
+            plt.draw()
+            plt.pause(0.001)
+            plt.clf()
             total_reward = {r: 0 for r in robots}
             # Episode is over so test every 10th
-            if iteration//10 > tests:
+            if iteration//50 > tests:
                 tests += 1
                 test()
             eng.init()

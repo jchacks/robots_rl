@@ -4,7 +4,6 @@ https://github.com/openai/baselines/blob/master/baselines/common/distributions.p
 """
 
 import tensorflow as tf
-# from tensorflow_probability import distributions
 
 
 class ProbabilityDistribution(object):
@@ -115,6 +114,9 @@ class CategoricalProbabilityDistribution(ProbabilityDistribution):
         uniform = tf.random.uniform(tf.shape(self.logits), dtype=self.logits.dtype)
         return tf.argmax(self.logits - tf.math.log(-tf.math.log(uniform)), axis=-1)
 
+    def prob(self):
+        return tf.nn.softmax(self.logits)
+
     @classmethod
     def fromflat(cls, flat):
         """
@@ -153,6 +155,9 @@ class MultiCategoricalProbabilityDistribution(ProbabilityDistribution):
 
     def sample(self):
         return tf.stack([p.sample() for p in self.categoricals], axis=-1)
+        
+    def prob(self):
+        return [p.prob() for p in self.categoricals]
 
     @classmethod
     def fromflat(cls, flat):

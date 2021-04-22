@@ -7,7 +7,11 @@ import tensorflow as tf
 from wrapper import Dummy, AITrainingBattle
 from utils import Memory, discounted, TURNING, MOVING
 import time
+import matplotlib.pyplot as plt
+import wandb
 
+wandb.init(project='robots_rl', entity='jchacks')
+config = wandb.config
 
 ACTION_DIMS = (2, 3, 3, 3)
 model.model = model.Model(ACTION_DIMS)
@@ -116,23 +120,27 @@ def train(memory):
     b_values = tf.concat(b_values, axis=0)
     b_obs = tf.concat(b_obs, axis=0)
 
-    if np.mean(b_rewards > 0) < 0.01:
-        print("Skipping too few positives")
-        return
+    # if np.mean(b_rewards > 0) < 0.01:
+    #     print("Skipping too few positives")
+    #     return
     losses = model.train(b_obs, b_rewards, b_action, b_values)
+    wandb.log({
+        "loss": losses[0],
+        "actor": losses[1],
+        "critic": losses[2],
+        "entropy": losses[3],
+        "advantage": losses[4],
+        "values": losses[5]
+    })
     if np.isnan(losses[0].numpy()):
         raise RuntimeError
-    print(f"{iteration}: {losses[0]}, "
-          f"Actor: {losses[1]}, Critic: {losses[2]}, "
-          f"Entropy: {losses[3]}, "
-          f"Advantage: {losses[4]}, "
-          f"Values: {losses[5]}")
 
 
 eng.init()
 total_reward = {r: 0 for r in robots}
-tests = 1
-max_steps = 50
+tests = 0
+max_steps = 1000
+wandb.config.max_steps = max_steps
 for iteration in range(1000000):
     # Create a memory per player
     memory = {r: Memory('rewards,action,values,obs,dones') for r in robots}
@@ -166,7 +174,7 @@ for iteration in range(1000000):
             )
 
         if eng.is_finished() or steps > 1000:
-            print(f"Reward: {list(total_reward.values())}")
+            wandb.log({"reward": np.mean(list(total_reward.values()))})
             total_reward = {r: 0 for r in robots}
             # Episode is over so test every 10th
             if iteration//50 > tests:

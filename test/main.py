@@ -1,21 +1,22 @@
 from robots.app import App
 from robots.engine import Engine
 from robots.robot.utils import *
-import model
+from model import Model, Trainer
 import numpy as np
 import tensorflow as tf
 from wrapper import Dummy, AITrainingBattle
 from utils import Memory, discounted, TURNING, MOVING
 import time
-import matplotlib.pyplot as plt
 import wandb
 
 wandb.init(project='robots_rl', entity='jchacks')
 config = wandb.config
+config.rlenv = "all_actions"
+config.action_space = "2,3,3,3"
 
 ACTION_DIMS = (2, 3, 3, 3)
-model.model = model.Model(ACTION_DIMS)
-
+model = Model(ACTION_DIMS)
+trainer = Trainer(model)
 
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (300, 300)
@@ -32,22 +33,22 @@ else:
     eng = Engine(robots, size)
 
 # Simplify battles
-eng.bullet_collisions_enabled = False
-eng.gun_heat_enabled = True
+eng.ENERGY_DECAY_ENABLED = True
+eng.GUN_HEAT_ENABLED = True
+eng.BULLET_COLLISIONS_ENABLED = False
 
 
 def get_obs(r):
     s = np.array(size)
     center = s//2
-    position = (r.position/center) - 1
-    position = (r.position/size)
     direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
     turret = np.sin(r.turret_bearing * np.pi / 180), np.cos(r.turret_bearing * np.pi / 180)
     return tf.cast(tf.concat([
         [(r.energy/50) - 1, r.turret_heat/30],
         direction,
         turret,
-        position
+        (r.position/center) - 1,
+        (r.position/size),
     ], axis=0), tf.float32)
 
 
@@ -87,7 +88,7 @@ def test(max_steps=200):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value = model.model.run(obs_batch)
+        action, value = model.run(obs_batch)
         action = assign_actions(action)
         eng.step()
         step += 1
@@ -99,7 +100,7 @@ def train(memory):
     obs = [get_obs(r) for r in robots]
     obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
     obs_batch = tf.stack(obs)
-    _, last_values = model.model.run(obs_batch)
+    _, last_values = model.run(obs_batch)
 
     b_rewards = []
     b_action = []
@@ -123,7 +124,7 @@ def train(memory):
     # if np.mean(b_rewards > 0) < 0.01:
     #     print("Skipping too few positives")
     #     return
-    losses = model.train(b_obs, b_rewards, b_action, b_values)
+    losses = trainer.train(b_obs, b_rewards, b_action, b_values)
     wandb.log({
         "loss": losses[0],
         "actor": losses[1],
@@ -139,8 +140,8 @@ def train(memory):
 eng.init()
 total_reward = {r: 0 for r in robots}
 tests = 0
-max_steps = 1000
-wandb.config.max_steps = max_steps
+max_steps = 200
+config.max_steps = max_steps
 for iteration in range(1000000):
     # Create a memory per player
     memory = {r: Memory('rewards,action,values,obs,dones') for r in robots}
@@ -152,7 +153,7 @@ for iteration in range(1000000):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value = model.model.sample(obs_batch)
+        action, value = model.sample(obs_batch)
         action = assign_actions(action)
 
         eng.step()

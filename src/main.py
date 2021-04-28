@@ -9,11 +9,6 @@ from utils import Memory, discounted, TURNING, MOVING
 import time
 import wandb
 
-wandb.init(project='robots_rl', entity='jchacks')
-config = wandb.config
-config.rlenv = "all_actions"
-config.action_space = "2,3,3,3"
-
 ACTION_DIMS = (2, 3, 3, 3)
 model = Model(ACTION_DIMS)
 trainer = Trainer(model)
@@ -21,7 +16,6 @@ trainer.restore()
 
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (600, 600)
-
 
 render = True
 if render:
@@ -75,27 +69,6 @@ def assign_actions(action):
     return action
 
 
-def test(max_steps=200):
-    eng.init()
-    eng.set_rate(60)
-    step = 0
-    print("Running test")
-    while not eng.is_finished() and step < max_steps:
-        # Calculate time to sleep
-        time.sleep(max(0, eng.next_sim - time.time()))
-        if render:
-            app.step()
-
-        obs = [get_obs(r) for r in robots]
-        obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
-        obs_batch = tf.stack(obs)
-        action, value = model.run(obs_batch)
-        action = assign_actions(action)
-        eng.step()
-        step += 1
-    eng.set_rate(-1)
-
-
 def train(memory):
     # Get obs for the last state
     obs = [get_obs(r) for r in robots]
@@ -142,6 +115,13 @@ eng.init()
 total_reward = {r: 0 for r in robots}
 tests = 0
 max_steps = 200
+
+# Initate WandB before running
+wandb.init(project='robots_rl', entity='jchacks')
+config = wandb.config
+config.rlenv = "all_actions"
+config.action_space = "2,3,3,3"
+config.size = size
 config.max_steps = max_steps
 for iteration in range(1000000):
     # Create a memory per player
@@ -175,13 +155,8 @@ for iteration in range(1000000):
                 dones=eng.is_finished()
             )
 
-        if eng.is_finished() or steps > 1000:
+        if eng.is_finished():
             wandb.log({"reward": np.mean(list(total_reward.values()))})
             total_reward = {r: 0 for r in robots}
-            # Episode is over so test every 10th
-            if iteration//50 > tests:
-                tests += 1
-                test()
-            eng.init()
 
     train(memory)

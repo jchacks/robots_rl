@@ -1,165 +1,156 @@
-import time
+from numpy.lib.utils import deprecate
+import tensorflow as tf
+import numpy as np
+from tensorflow.keras import layers
+from distributions import MultiCategoricalProbabilityDistribution
 
-from baselines.a2c.utils import Scheduler
-from utils import fully, tf, tfp
-from policies import Policy
+
+class Critic(tf.Module):
+    def __init__(self, name='critic') -> None:
+        super().__init__(name=name)
+        self.d2 = layers.Dense(64, activation='relu')
+        self.d3 = layers.Dense(64, activation='relu')
+        self.o = layers.Dense(1)
+
+    @tf.Module.with_name_scope
+    def __call__(self, x):
+        x = self.d2(x)
+        x = self.d3(x)
+        return self.o(x)
 
 
-class Model(object):
-    def __init__(self, nsteps, nenvs, state_features, num_actions=2, restore=True, max_grad_norm=0.4):
-        self.is_training = 1.0
-        self.global_step = tf.Variable(0, name="global_step", trainable=False)
-
-        self.nsteps = nsteps
-        self.nenvs = nenvs
-        nbatch = nsteps * nenvs
-
+class Actor(tf.Module):
+    def __init__(self, num_actions, name='actor'):
+        super().__init__(name=name)
         self.num_actions = num_actions
-        config = tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
-        self._sess = tf.Session(config=config)
+        self.d1 = layers.Dense(128, activation='relu')
+        self.d2 = layers.Dense(64, activation='relu')
+        self.o = layers.Dense(num_actions)
 
-        self.ent_coef = 0.005
-        self.vf_coef = 0.5  # 0.5 default
-        self.lr = 7e-4
-        self.alpha = 0.99
-        self.epsilon = 1e-5
-        lrschedule = "constant"
-        self.lr = Scheduler(v=self.lr, nvalues=80e6, schedule=lrschedule)
+    @tf.Module.with_name_scope
+    def __call__(self, x):
+        x = self.d1(x)
+        x = self.d2(x)
+        return self.o(x)
 
-        with tf.variable_scope("model", reuse=tf.AUTO_REUSE):
-            # step_model is used for sampling
-            self.step_model = step_model = Policy(nenvs, 1, num_actions, state_features, self._sess)
-            # train_model is used to train our network
-            self.train_model = train_model = Policy(nenvs, nsteps, num_actions, state_features, self._sess)
 
-        with tf.variable_scope("optimiser", reuse=tf.AUTO_REUSE):
-            self.LR = LR = tf.placeholder(tf.float32, [], "learning_rate")
-            self.ADV = ADV = tf.placeholder("float32", [nbatch], "advantage")
-            self.A = A = tf.placeholder("float32", [nbatch, self.num_actions], "action")
-            self.R = R = tf.placeholder("float32", [nbatch], "reward")
+class Model(tf.Module):
+    def __init__(self, action_space, name='model'):
+        super().__init__(name=name)
+        self.action_space = action_space
+        self.num_actions = np.sum(action_space)
 
-            # Used to scale losses
-            self.OLDNEGLOGPAC = OLDNEGLOGPAC = tf.placeholder("float32", [nbatch], "old_neglogpac")
-            self.OLDVALUE = OLDVALUE = tf.placeholder("float32", [nbatch], "old_value")
+        self.d1 = layers.Dense(512, activation='relu')
+        self.d2 = layers.Dense(512, activation='relu')
+        self.actor = Actor(self.num_actions)
+        self.critic = Critic()
 
-            # Cliprange
-            self.CLIPRANGE = CLIPRANGE = tf.placeholder(tf.float32, [])
-            tf.summary.scalar("lr", LR)
+    @tf.Module.with_name_scope
+    def __call__(self, obs):
+        latent = self.d1(obs)
+        latent = self.d2(latent)
+        return self.actor(latent), self.critic(latent)
 
-            ### Actor loss
-            neglogpac = train_model.pd.neglogp(A)
-            # Calculate ratio (pi current policy / pi old policy)
-            ratio = tf.exp(OLDNEGLOGPAC - neglogpac)
-            # Record some stats
-            approxkl = 0.5 * tf.reduce_mean(tf.square(neglogpac - OLDNEGLOGPAC))
-            tf.summary.scalar("approxkl", approxkl)
-            clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE)))
-            tf.summary.scalar("clipfrac", clipfrac)
-            entropy = tf.reduce_mean(train_model.pd.entropy())
-            tf.summary.scalar("entropy", entropy)
+    def distribution(self, logits):
+        return MultiCategoricalProbabilityDistribution(self.action_space, logits)
 
-            # Calculate pg_loss
-            pg_losses1 = -ADV * ratio
-            pg_losses2 = -ADV * tf.clip_by_value(ratio, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
-            pg_loss = tf.reduce_mean(tf.maximum(pg_losses1, pg_losses2))
-            tf.summary.scalar("pg_loss", pg_loss)
+    def sample(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return dist.sample().numpy(), value.numpy()
 
-            ### Critic loss
-            vpred = train_model.vf
-            # Clip the value to reduce variability during Critic training
-            vpredclipped = OLDVALUE + tf.clip_by_value(train_model.vf - OLDVALUE, -CLIPRANGE, CLIPRANGE)
-            vf_losses1 = tf.square(vpred - R)
-            vf_losses2 = tf.square(vpredclipped - R)
+    def prob(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return [d.numpy() for d in dist.prob()]
 
-            vf_loss = 0.5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2))
-            tf.summary.scalar("vf_loss", vf_loss)
+    def sample(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return dist.sample().numpy(), value.numpy()
 
-            loss = pg_loss - entropy * self.ent_coef + vf_loss * self.vf_coef
+    def run(self, obs):
+        logits, value = self(obs)
+        dist = self.distribution(logits)
+        return dist.mode().numpy(), value.numpy()
 
-            # Optimiser
-            params = tf.trainable_variables("model")
-            self.trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
 
-            self.grads, _ = tf.clip_by_global_norm(tf.gradients(loss, params), max_grad_norm)
-            grads, var = zip(*self.trainer.compute_gradients(loss, params))
-            if max_grad_norm is not None:
-                # Clip the gradients (normalize)
-                grads, _grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
-            grads_and_var = list(zip(grads, var))
-            self.grads = grads
-            self.var = var
-            self._train_op = self.trainer.apply_gradients(grads_and_var, global_step=self.global_step)
+class Trainer(object):
+    def __init__(self, model, save_path='../ckpts') -> None:
+        self.optimiser = tf.keras.optimizers.Adam(learning_rate=7e-4, epsilon=1e-5)
+        self.model = model
+        self.ckpt = tf.train.Checkpoint(
+            step=tf.Variable(1),
+            optimizer=self.optimiser,
+            model=model
+        )
+        self.manager = tf.train.CheckpointManager(self.ckpt, save_path, max_to_keep=3)
 
-        self.loss_names = ["policy_loss", "value_loss", "policy_entropy", "approxkl", "clipfrac"]
-        self.stats_list = [pg_loss, vf_loss, entropy, approxkl, clipfrac]
+    def checkpoint(self):
+        save_path = self.manager.save()
+        print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
 
-        # Map functions from sub models
-        self.step = step_model.step
-        self.test = step_model.test
-        self.value = step_model.value
-        self.initial_state = step_model.initial_state
+    def train(self, observations, rewards, actions, values, norm_advs=False, print_grads=False):
+        """[summary]
 
-        self.init()
-        self.save_path = "../checkpoint/model"
-        if restore:
-            self.restore()
-        self.summary()
+        Args:
+            observations ([type]): [description]
+            rewards ([type]): [description]
+            actions ([type]): [description]
+            values ([type]): From previous values
+        """
+        observations = tf.cast(observations, tf.float32)
+        rewards = tf.cast(rewards, tf.float32)
 
-    def train(self, obs, states, rewards, masks, actions, values, neglogpacs, cliprange, grads=False, norm_advs=True):
-        if not self._summ_writer:
-            self._summ_writer = tf.summary.FileWriter("../train/{0}".format(int(time.time())), self._sess.graph)
-
-        train_fetches = {
-            "minimiser": self._train_op,
-            "step": self.global_step,
-            "summary": self.summ,
-        }
-        train_fetches.update(dict(zip(self.loss_names, self.stats_list)))
-        if grads:
-            train_fetches["grads"] = self.grads
-
-        advs = rewards - values
+        advantage = rewards - values
         if norm_advs:
-            advs = (advs - advs.mean()) / (advs.std() + 1e-8)
+            advantage = (advantage - tf.reduce_mean(advantage)) / (tf.math.reduce_std(advantage) + 1e-8)
 
-        for step in range(len(obs)):
-            cur_lr = self.lr.value()
+        with tf.GradientTape() as tape:
+            logits, vpred = self.model(observations)
+            pd = self.model.distribution(logits)
+            a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]
+            a_loss = tf.reduce_mean(a_losses)
 
-        res = self._sess.run(
-            train_fetches,
-            {
-                self.train_model.X: obs,
-                self.train_model.S: states,
-                self.train_model.M: masks,
-                self.LR: cur_lr,
-                self.ADV: advs,
-                self.R: rewards,
-                self.A: actions,
-                self.CLIPRANGE: cliprange,
-                self.OLDNEGLOGPAC: neglogpacs,
-                self.OLDVALUE: values,
-            },
+            # Value function loss
+            c_losses = (vpred - rewards) ** 2
+            c_loss = tf.reduce_mean(c_losses)
+
+            entropy_reg = tf.reduce_mean(pd.entropy())
+            loss = a_loss + (c_loss * 0.1) - (entropy_reg * 0.005)
+
+        training_variables = tape.watched_variables()
+        grads = tape.gradient(loss, training_variables)
+        if print_grads:
+            for g, v in zip(grads, training_variables):
+                max_g = tf.reduce_max(g)
+                tf.print(v.name, max_g)
+        grads_and_vars = zip(grads, training_variables)
+        self.optimiser.apply_gradients(grads_and_vars)
+        if int(self.ckpt.step) % 1000 == 0:
+            self.checkpoint()
+
+        self.ckpt.step.assign_add(1)
+        d_grads = tf.reduce_mean([tf.reduce_mean(g) for g in grads])
+        d_val = tf.reduce_mean(vpred)
+        d_adv = tf.reduce_mean(advantage)
+        return (
+            loss,
+            a_loss,
+            c_loss,
+            entropy_reg,
+            d_adv,
+            d_val,
+            d_grads
         )
 
-        self._summ_writer.add_summary(res["summary"], global_step=res["step"])
-        if res["step"] % 100 == 0:
-            self._saver.save(self._sess, self.save_path, global_step=res["step"])
-        return res
-
-    def restore(self):
-        chkp = tf.train.latest_checkpoint("../checkpoint")
-        if chkp is not None:
-            print("Restoring chkp: %s " % (chkp,))
-            self._saver.restore(self._sess, chkp)
-
-    def init(self):
-        self._sess.run(tf.global_variables_initializer())
-        self._saver = tf.train.Saver(tf.trainable_variables(), save_relative_paths=True)
-        self._summ_writer = None
-
-        # self.sig_loss = tf.reduce_mean(tf.nn.relu(self.sig - 0.5) ** 2)
-        # self.mu_loss = tf.reduce_mean(self.mu ** 2) * 1e2
-
-    def summary(self):
-        self.summ = tf.summary.merge_all(scope="(optimiser/)|(model/policy_1/)")
-        return self.summ
+    def restore(self, partial=False):
+        status = self.ckpt.restore(self.manager.latest_checkpoint)
+        if partial:
+            status.expect_partial()
+        else:
+            status.assert_consumed()
+        if self.manager.latest_checkpoint:
+            print("Restored from {}".format(self.manager.latest_checkpoint))
+        else:
+            print("Initializing from scratch.")

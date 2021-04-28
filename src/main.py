@@ -20,7 +20,7 @@ trainer = Trainer(model)
 trainer.restore()
 
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-size = (300, 300)
+size = (600, 600)
 
 
 render = True

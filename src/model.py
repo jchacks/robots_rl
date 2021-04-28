@@ -67,7 +67,8 @@ class Model(tf.Module):
     def sample(self, obs):
         logits, value = self(obs)
         dist = self.distribution(logits)
-        return dist.sample().numpy(), value.numpy()
+        actions = dist.sample().numpy()
+        return actions, value.numpy(), dist.neglogp(actions).numpy()
 
     def run(self, obs):
         logits, value = self(obs)
@@ -90,7 +91,14 @@ class Trainer(object):
         save_path = self.manager.save()
         print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
 
-    def train(self, observations, rewards, actions, values, norm_advs=False, print_grads=False):
+    def train(self,
+              observations,
+              rewards,
+              actions,
+              neglogp,
+              values,
+              norm_advs=False,
+              print_grads=False):
         """[summary]
 
         Args:
@@ -109,7 +117,9 @@ class Trainer(object):
         with tf.GradientTape() as tape:
             logits, vpred = self.model(observations)
             pd = self.model.distribution(logits)
-            a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]
+
+            ratio = tf.exp(neglogp - pd.neglogp(actions)[:, tf.newaxis])
+            a_losses = advantage * ratio
             a_loss = tf.reduce_mean(a_losses)
 
             # Value function loss

@@ -78,6 +78,7 @@ def train(memory):
 
     b_rewards = []
     b_action = []
+    b_neglogp = []
     b_values = []
     b_obs = []
 
@@ -87,18 +88,20 @@ def train(memory):
             discounted(np.array(mem['rewards']),
                        np.array(mem['dones']), + last_value, 0.9))
         b_action.append(mem['action'])
+        b_neglogp.append(mem['neglogp'])
         b_values.append(mem['values'])
         b_obs.append(mem['obs'])
 
     b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
     b_action = tf.concat(b_action, axis=0)
+    b_neglogp = tf.concat(b_neglogp, axis=0)
     b_values = tf.concat(b_values, axis=0)
     b_obs = tf.concat(b_obs, axis=0)
 
     # if np.mean(b_rewards > 0) < 0.01:
     #     print("Skipping too few positives")
     #     return
-    losses = trainer.train(b_obs, b_rewards, b_action, b_values)
+    losses = trainer.train(b_obs, b_rewards, b_action, b_neglogp, b_values)
     wandb.log({
         "loss": losses[0],
         "actor": losses[1],
@@ -125,7 +128,7 @@ config.size = size
 config.max_steps = max_steps
 for iteration in range(1000000):
     # Create a memory per player
-    memory = {r: Memory('rewards,action,values,obs,dones') for r in robots}
+    memory = {r: Memory('rewards,action,neglogp,values,obs,dones') for r in robots}
     steps = 0
     while steps <= max_steps:
         if render:
@@ -134,7 +137,7 @@ for iteration in range(1000000):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value = model.sample(obs_batch)
+        action, value, neglogp = model.sample(obs_batch)
         action = assign_actions(action)
 
         eng.step()
@@ -151,6 +154,7 @@ for iteration in range(1000000):
                 rewards=reward,
                 action=action[i],
                 values=value[i],
+                neglogp=neglogp[i],
                 obs=obs[i],
                 dones=eng.is_finished()
             )

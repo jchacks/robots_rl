@@ -17,6 +17,7 @@ config.action_space = "2,3,3,3"
 ACTION_DIMS = (2, 3, 3, 3)
 model = Model(ACTION_DIMS)
 trainer = Trainer(model)
+trainer.restore()
 
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (300, 300)

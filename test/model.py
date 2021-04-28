@@ -144,8 +144,12 @@ class Trainer(object):
             d_grads
         )
 
-    def restore(self):
-        self.ckpt.restore(self.manager.latest_checkpoint)
+    def restore(self, partial=False):
+        status = self.ckpt.restore(self.manager.latest_checkpoint)
+        if partial:
+            status.expect_partial()
+        else:
+            status.assert_consumed()
         if self.manager.latest_checkpoint:
             print("Restored from {}".format(self.manager.latest_checkpoint))
         else:

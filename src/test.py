@@ -33,7 +33,7 @@ def get_obs(r):
     direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
     turret = np.sin(r.turret_bearing * np.pi / 180), np.cos(r.turret_bearing * np.pi / 180)
     return tf.cast(tf.concat([
-        [(r.energy/50) - 1, r.turret_heat/30],
+        [(r.energy/50) - 1, r.turret_heat/30, r.velocity/8],
         direction,
         turret,
         (r.position/center) - 1,

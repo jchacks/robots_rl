@@ -39,7 +39,7 @@ def get_obs(r):
     direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
     turret = np.sin(r.turret_bearing * np.pi / 180), np.cos(r.turret_bearing * np.pi / 180)
     return tf.cast(tf.concat([
-        [(r.energy/50) - 1, r.turret_heat/30],
+        [(r.energy/50) - 1, r.turret_heat/30, r.velocity/8],
         direction,
         turret,
         (r.position/center) - 1,
@@ -158,5 +158,6 @@ for iteration in range(1000000):
         if eng.is_finished():
             wandb.log({"reward": np.mean(list(total_reward.values()))})
             total_reward = {r: 0 for r in robots}
+            eng.init()
 
     train(memory)

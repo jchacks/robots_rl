@@ -115,7 +115,7 @@ eng.init()
 state = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
 total_reward = {r: 0 for r in robots}
 tests = 0
-max_steps = 200
+max_steps = 100
 
 # Initate WandB before running
 wandb.init(project='robots_rl', entity='jchacks')
@@ -170,5 +170,5 @@ for iteration in range(1000000):
     obs = [get_obs(r) for r in robots]
     obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
     obs_batch = tf.stack(obs)
-    _, last_values = model.run(obs_batch, state)
+    _, last_values, state = model.run(obs_batch, state)
     train(memory, last_values)

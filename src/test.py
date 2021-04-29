@@ -6,6 +6,14 @@ import tensorflow as tf
 from wrapper import Dummy, AITrainingBattle
 from utils import TURNING, MOVING
 import time
+import argparse
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', "--verbose", action='store_true', help="Print debugging information.")
+    return parser.parse_args()
+
 
 ACTION_DIMS = (2, 3, 3, 3)
 model = Model(ACTION_DIMS)
@@ -63,25 +71,30 @@ def assign_actions(action):
     return action
 
 
-DEBUG = True
-eng.set_rate(60)
-while True:
-    trainer = Trainer(model)
-    trainer.restore(partial=True)
-    eng.init()
-    states = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
-    print("Running test")
-    while not eng.is_finished():
-        # Calculate time to sleep
-        time.sleep(max(0, eng.next_sim - time.time()))
-        app.step()
-        obs = [get_obs(r) for r in robots]
-        obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
-        obs_batch = tf.stack(obs)
-        action, value, states = model.run(obs_batch, states)
-        action = assign_actions(action)
-        if DEBUG:
-            for r in robots:
-                print(r.base_color, r.position, r.moving, r.base_turning, r.turret_turning)
+def main(debug=False):
+    eng.set_rate(60)
+    while True:
+        trainer = Trainer(model)
+        trainer.restore(partial=True)
+        eng.init()
+        states = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
+        print("Running test")
+        while not eng.is_finished():
+            # Calculate time to sleep
+            time.sleep(max(0, eng.next_sim - time.time()))
+            app.step()
+            obs = [get_obs(r) for r in robots]
+            obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
+            obs_batch = tf.stack(obs)
+            action, value, states = model.run(obs_batch, states)
+            action = assign_actions(action)
+            if debug:
+                for r in robots:
+                    print(r.base_color, r.position, r.moving, r.base_turning, r.turret_turning, r.should_fire)
 
-        eng.step()
+            eng.step()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    main(debug=args.verbose)

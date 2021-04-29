@@ -63,12 +63,13 @@ def assign_actions(action):
     return action
 
 
-DEBUG = False
+DEBUG = True
 eng.set_rate(60)
 while True:
     trainer = Trainer(model)
     trainer.restore(partial=True)
     eng.init()
+    states = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
     print("Running test")
     while not eng.is_finished():
         # Calculate time to sleep
@@ -77,7 +78,7 @@ while True:
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value = model.run(obs_batch)
+        action, value, states = model.run(obs_batch, states)
         action = assign_actions(action)
         if DEBUG:
             for r in robots:

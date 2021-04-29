@@ -69,18 +69,15 @@ def assign_actions(action):
     return action
 
 
-def train(memory):
+def train(memory, last_values):
     # Get obs for the last state
-    obs = [get_obs(r) for r in robots]
-    obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
-    obs_batch = tf.stack(obs)
-    _, last_values = model.run(obs_batch)
-
     b_rewards = []
     b_action = []
     b_neglogp = []
     b_values = []
     b_obs = []
+    b_statesh = []
+    b_statesc = []
 
     for robot, last_value in zip(robots, last_values):
         mem = memory[robot]
@@ -91,17 +88,17 @@ def train(memory):
         b_neglogp.append(mem['neglogp'])
         b_values.append(mem['values'])
         b_obs.append(mem['obs'])
+        b_statesh.append(mem['stateh'])
+        b_statesc.append(mem['statec'])
 
     b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
     b_action = tf.concat(b_action, axis=0)
     b_neglogp = tf.concat(b_neglogp, axis=0)
     b_values = tf.concat(b_values, axis=0)
     b_obs = tf.concat(b_obs, axis=0)
-
-    # if np.mean(b_rewards > 0) < 0.01:
-    #     print("Skipping too few positives")
-    #     return
-    losses = trainer.train(b_obs, b_rewards, b_action, b_neglogp, b_values)
+    b_statesh = tf.concat(b_statesh, axis=0)
+    b_statesc = tf.concat(b_statesc, axis=0)
+    losses = trainer.train(b_obs, [b_statesh, b_statesc], b_rewards, b_action, b_neglogp, b_values)
     wandb.log({
         "loss": losses[0],
         "actor": losses[1],
@@ -115,6 +112,7 @@ def train(memory):
 
 
 eng.init()
+state = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
 total_reward = {r: 0 for r in robots}
 tests = 0
 max_steps = 200
@@ -128,7 +126,7 @@ config.size = size
 config.max_steps = max_steps
 for iteration in range(1000000):
     # Create a memory per player
-    memory = {r: Memory('rewards,action,neglogp,values,obs,dones') for r in robots}
+    memory = {r: Memory('rewards,action,neglogp,values,obs,stateh,statec,dones') for r in robots}
     steps = 0
     while steps <= max_steps:
         if render:
@@ -137,7 +135,8 @@ for iteration in range(1000000):
         obs = [get_obs(r) for r in robots]
         obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
         obs_batch = tf.stack(obs)
-        action, value, neglogp = model.sample(obs_batch)
+        old_state = state
+        action, value, neglogp, state = model.sample(obs_batch, old_state)
         action = assign_actions(action)
 
         eng.step()
@@ -156,6 +155,8 @@ for iteration in range(1000000):
                 values=value[i],
                 neglogp=neglogp[i],
                 obs=obs[i],
+                stateh=old_state[0][i],
+                statec=old_state[1][i],
                 dones=eng.is_finished()
             )
 
@@ -163,5 +164,11 @@ for iteration in range(1000000):
             wandb.log({"reward": np.mean(list(total_reward.values()))})
             total_reward = {r: 0 for r in robots}
             eng.init()
+            state = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
 
-    train(memory)
+    # Get the last value
+    obs = [get_obs(r) for r in robots]
+    obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
+    obs_batch = tf.stack(obs)
+    _, last_values = model.run(obs_batch, state)
+    train(memory, last_values)

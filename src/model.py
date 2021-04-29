@@ -39,41 +39,37 @@ class Model(tf.Module):
         super().__init__(name=name)
         self.action_space = action_space
         self.num_actions = np.sum(action_space)
-
+        self.lstm = layers.LSTMCell(units=512)
         self.d1 = layers.Dense(512, activation='relu')
         self.d2 = layers.Dense(512, activation='relu')
         self.actor = Actor(self.num_actions)
         self.critic = Critic()
 
     @tf.Module.with_name_scope
-    def __call__(self, obs):
-        latent = self.d1(obs)
+    def __call__(self, obs, states):
+        latent, states = self.lstm(obs, states=states)
+        latent = self.d1(latent)
         latent = self.d2(latent)
-        return self.actor(latent), self.critic(latent)
+        return self.actor(latent), self.critic(latent), states
 
     def distribution(self, logits):
         return MultiCategoricalProbabilityDistribution(self.action_space, logits)
 
-    def sample(self, obs):
-        logits, value = self(obs)
-        dist = self.distribution(logits)
-        return dist.sample().numpy(), value.numpy()
-
     def prob(self, obs):
-        logits, value = self(obs)
+        logits, value, states = self(obs)
         dist = self.distribution(logits)
         return [d.numpy() for d in dist.prob()]
 
-    def sample(self, obs):
-        logits, value = self(obs)
+    def sample(self, obs, states):
+        logits, value, states = self(obs, states)
         dist = self.distribution(logits)
         actions = dist.sample().numpy()
-        return actions, value.numpy(), dist.neglogp(actions).numpy()
+        return actions, value.numpy(), dist.neglogp(actions).numpy(), states
 
-    def run(self, obs):
-        logits, value = self(obs)
+    def run(self, obs, states):
+        logits, value, states = self(obs, states)
         dist = self.distribution(logits)
-        return dist.mode().numpy(), value.numpy()
+        return dist.mode().numpy(), value.numpy(), states
 
 
 class Trainer(object):
@@ -93,6 +89,7 @@ class Trainer(object):
 
     def train(self,
               observations,
+              states,
               rewards,
               actions,
               neglogp,
@@ -115,7 +112,7 @@ class Trainer(object):
             advantage = (advantage - tf.reduce_mean(advantage)) / (tf.math.reduce_std(advantage) + 1e-8)
 
         with tf.GradientTape() as tape:
-            logits, vpred = self.model(observations)
+            logits, vpred, _ = self.model(observations, states=states)
             pd = self.model.distribution(logits)
 
             ratio = tf.exp(neglogp - pd.neglogp(actions)[:, tf.newaxis])
@@ -127,7 +124,7 @@ class Trainer(object):
             c_loss = tf.reduce_mean(c_losses)
 
             entropy_reg = tf.reduce_mean(pd.entropy())
-            loss = a_loss + (c_loss * 0.1) - (entropy_reg * 0.005)
+            loss = a_loss + (c_loss * 0.2) - (entropy_reg * 0.05)
 
         training_variables = tape.watched_variables()
         grads = tape.gradient(loss, training_variables)

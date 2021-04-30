@@ -14,161 +14,144 @@ model = Model(ACTION_DIMS)
 trainer = Trainer(model)
 trainer.restore()
 
-robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-size = (600, 600)
 
-render = True
-if render:
-    app = App(size=size)
-    battle = AITrainingBattle(robots, size)
-    app.child = battle
-    # Use the eng create by battle
-    eng = battle.eng
-else:
+def make_eng():
+    robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
+    size = (600, 600)
     eng = Engine(robots, size)
 
-# Simplify battles
-eng.ENERGY_DECAY_ENABLED = True
-eng.GUN_HEAT_ENABLED = True
-eng.BULLET_COLLISIONS_ENABLED = False
+    # Simplify battles
+    eng.ENERGY_DECAY_ENABLED = True
+    eng.GUN_HEAT_ENABLED = True
+    eng.BULLET_COLLISIONS_ENABLED = False
+    return eng
 
 
-def get_obs(r):
-    s = np.array(size)
-    center = s//2
-    direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
-    turret = np.sin(r.turret_bearing * np.pi / 180), np.cos(r.turret_bearing * np.pi / 180)
-    return tf.cast(tf.concat([
-        [(r.energy/50) - 1, r.turret_heat/30, r.velocity/8],
-        direction,
-        turret,
-        (r.position/center) - 1,
-        (r.position/size),
-    ], axis=0), tf.float32)
+class Runner(object):
+    def __init__(self, num) -> None:
+        self.num = num
+        self.engines = [make_eng() for _ in range(num)]
+        for eng in self.engines:
+            eng.init()
+            eng.memories = {r: Memory('rewards,action,neglogp,values,obs,state,dones') for r in eng.robots}
+            eng.states = tf.stack(model.lstm.get_initial_state(batch_size=2, dtype=tf.float32))
+            eng.total_reward = {r: 0 for r in eng.robots}
 
+    def get_obs(self):
+        return tf.reshape(
+            tf.stack([[r.get_obs() for r in eng.robots] for eng in self.engines]),
+            (self.num*2, -1)
+        )
 
-def get_position(r):
-    return tf.cast(r.position/size, tf.float32)
+    def get_states(self):
+        return tf.reshape(tf.stack([eng.states for eng in self.engines], axis=1), (2, self.num*2, -1))
 
+    def run(self):
+        observations = self.get_obs()
+        states = self.get_states()
+        actions, values, neglogps, new_states = model.sample(observations, tf.unstack(states))
 
-def assign_actions(action):
-    for i, robot in enumerate(robots):
-        # Apply actions
-        shoot, turn, move, turret = action[i]
-        if robot.turret_heat > 0:
-            shoot = 0
-        try:
-            robot.moving = MOVING[move]
-            robot.base_turning = TURNING[turn]
-            robot.turret_turning = TURNING[turret]
-            robot.should_fire = shoot > 0
-            robot.previous_energy = robot.energy
-        except Exception:
-            print("Failed assigning actions", i, turn, shoot)
-            raise
-    return action
+        new_states = tf.reshape(tf.stack(new_states), (2, self.num, 2, -1))
+        actions = tf.reshape(actions, (self.num, 2, -1))
 
+        # Assign actions and records the next states
+        for i, eng in enumerate(self.engines):
+            for j, robot in enumerate(eng.robots):
+                robot.assign_actions(actions[i][j])
+            eng.states = new_states[:, i]
+            eng.step()
 
-def train(memory, last_values):
-    # Get obs for the last state
-    b_rewards = []
-    b_action = []
-    b_neglogp = []
-    b_values = []
-    b_obs = []
-    b_statesh = []
-    b_statesc = []
+        # Reshape back to num_envs, 2 robots, dims
+        observations = tf.reshape(observations, (self.num, 2, -1))
+        values = tf.reshape(values, (self.num, 2, -1))
+        neglogps = tf.reshape(neglogps, (self.num, 2, -1))
+        states = tf.reshape(states, (2, self.num, 2, -1))
 
-    for robot, last_value in zip(robots, last_values):
-        mem = memory[robot]
-        b_rewards.append(
-            discounted(np.array(mem['rewards']),
-                       np.array(mem['dones']), + last_value, 0.9))
-        b_action.append(mem['action'])
-        b_neglogp.append(mem['neglogp'])
-        b_values.append(mem['values'])
-        b_obs.append(mem['obs'])
-        b_statesh.append(mem['stateh'])
-        b_statesc.append(mem['statec'])
+        for i, eng in enumerate(self.engines):
+            for j, robot in enumerate(eng.robots):
+                reward = (robot.energy-robot.previous_energy)/100
+                if eng.is_finished():
+                    if robot.energy > 0:
+                        reward += 1
+                    else:
+                        reward -= 1
 
-    b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
-    b_action = tf.concat(b_action, axis=0)
-    b_neglogp = tf.concat(b_neglogp, axis=0)
-    b_values = tf.concat(b_values, axis=0)
-    b_obs = tf.concat(b_obs, axis=0)
-    b_statesh = tf.concat(b_statesh, axis=0)
-    b_statesc = tf.concat(b_statesc, axis=0)
-    losses = trainer.train(b_obs, [b_statesh, b_statesc], b_rewards, b_action, b_neglogp, b_values)
-    wandb.log({
-        "loss": losses[0],
-        "actor": losses[1],
-        "critic": losses[2],
-        "entropy": losses[3],
-        "advantage": losses[4],
-        "values": losses[5]
-    })
-    if np.isnan(losses[0].numpy()):
-        raise RuntimeError
+                eng.total_reward[robot] += reward
+                eng.memories[robot].append(
+                    rewards=reward,
+                    action=actions[i, j],
+                    values=values[i, j],
+                    neglogp=neglogps[i, j],
+                    obs=observations[i, j],
+                    state=states[:, i, j],
+                    dones=eng.is_finished()
+                )
 
+            if eng.is_finished():
+                eng.total_reward = {r: 0 for r in eng.robots}
+                eng.init()
+                eng.states = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
 
-eng.init()
-state = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
-total_reward = {r: 0 for r in robots}
-tests = 0
-max_steps = 100
+    def train(self,):
+        observations = self.get_obs()
+        states = self.get_states()
+        _, last_values, _ = model.run(observations, states)
+        last_values = tf.reshape(last_values, (self.num, 2, -1))
+
+        b_rewards = []
+        b_action = []
+        b_neglogp = []
+        b_values = []
+        b_obs = []
+        b_states = []
+
+        for i, eng in enumerate(self.engines):
+            for j, robot in enumerate(eng.robots):
+                mem = eng.memories[robot]
+                disc_reward = discounted(np.array(mem['rewards']), np.array(mem['dones']), last_values[i][j], 0.9)
+                b_rewards.append(disc_reward)
+                b_action.append(mem['action'])
+                b_neglogp.append(mem['neglogp'])
+                b_values.append(mem['values'])
+                b_obs.append(mem['obs'])
+                b_states.append(mem['state'])
+
+            # Clear memories of old data
+            eng.memories = {r: Memory('rewards,action,neglogp,values,obs,state,dones') for r in eng.robots}
+
+        b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
+        b_action = tf.concat(b_action, axis=0)
+        b_neglogp = tf.concat(b_neglogp, axis=0)
+        b_values = tf.concat(b_values, axis=0)
+        b_obs = tf.concat(b_obs, axis=0)
+        b_states = tf.concat(b_states, axis=0)
+        losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
+        wandb.log({
+            "loss": losses[0],
+            "actor": losses[1],
+            "critic": losses[2],
+            "entropy": losses[3],
+            "advantage": losses[4],
+            "values": losses[5]
+        })
+        if np.isnan(losses[0].numpy()):
+            raise RuntimeError
+        
+
+max_steps = 30
 
 # Initate WandB before running
 wandb.init(project='robots_rl', entity='jchacks')
 config = wandb.config
 config.rlenv = "all_actions"
 config.action_space = "2,3,3,3"
-config.size = size
 config.max_steps = max_steps
+runner = Runner(100)
+
 for iteration in range(1000000):
     # Create a memory per player
-    memory = {r: Memory('rewards,action,neglogp,values,obs,stateh,statec,dones') for r in robots}
     steps = 0
-    while steps <= max_steps:
-        if render:
-            app.step()
-
-        obs = [get_obs(r) for r in robots]
-        obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
-        obs_batch = tf.stack(obs)
-        old_state = state
-        action, value, neglogp, state = model.sample(obs_batch, old_state)
-        action = assign_actions(action)
-
-        eng.step()
-        steps += 1
-
-        # Add to each robots memory
-        for i, robot in enumerate(robots):
-            reward = 0
-            if eng.is_finished() and robot.energy > 0:
-                reward += 1
-            reward += (robot.energy-robot.previous_energy)/100
-            total_reward[robot] += reward
-            memory[robot].append(
-                rewards=reward,
-                action=action[i],
-                values=value[i],
-                neglogp=neglogp[i],
-                obs=obs[i],
-                stateh=old_state[0][i],
-                statec=old_state[1][i],
-                dones=eng.is_finished()
-            )
-
-        if eng.is_finished():
-            wandb.log({"reward": np.mean(list(total_reward.values()))})
-            total_reward = {r: 0 for r in robots}
-            eng.init()
-            state = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
-
-    # Get the last value
-    obs = [get_obs(r) for r in robots]
-    obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
-    obs_batch = tf.stack(obs)
-    _, last_values, state = model.run(obs_batch, state)
-    train(memory, last_values)
+    for i in range(max_steps):
+        runner.run()
+    runner.train()
+    print(iteration)

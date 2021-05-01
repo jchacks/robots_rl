@@ -1,12 +1,62 @@
-from functools import reduce
-import operator
 import logging
-import tqdm
+import operator
+import time
+from functools import reduce
+from collections import defaultdict, deque
+
+import numba as nb
 import numpy as np
+import tqdm
 from robots.robot.utils import *
+import tensorflow as tf
 
 TURNING = [Turn.NONE, Turn.LEFT, Turn.RIGHT]
 MOVING = [Move.NONE, Move.FORWARD, Move.BACK]
+
+
+def cast(dtype):
+    def wrap(function):
+        def inner(*args, **kwargs):
+            return tf.cast(function(*args, **kwargs), dtype)
+        return inner
+    return wrap
+
+
+class Timer(object):
+    def __init__(self, maxlen=10):
+        self.times = deque(maxlen=maxlen)
+        self.splits = defaultdict(lambda: deque(maxlen=maxlen))
+
+    def block(self):
+        start = time.time()
+        yield
+        end = time.time()
+        self.times.append(end - start)
+
+    def time(self, func):
+        def inner(*args, **kwargs):
+            start = time.time()
+            res = func(*args, **kwargs)
+            end = time.time()
+            self.times.append(end - start)
+            return res
+        return inner
+
+    def split(self, name=""):
+        self.splits[name].append(time.time())
+
+    def since(self, name=""):
+        return time.time() - self.splits[name][-1]
+
+    def last_diff(self, name=""):
+        if len(self.splits[name]) > 1:
+            return self.splits[name][-1] - self.splits[name][-2]
+        else:
+            return np.nan
+
+    def mean_diff(self, name=""):
+        times = np.array(self.splits[name])
+        return np.mean(times[1:] - times[:-1])
 
 
 class TqdmLoggingHandler(logging.Handler):

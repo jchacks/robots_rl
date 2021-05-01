@@ -1,7 +1,7 @@
 from robots.app import Battle
 from robots.robot import Robot
 import numpy as np
-from utils import TURNING, MOVING, Memory
+from utils import TURNING, MOVING
 
 
 class AITrainingBattle(Battle):
@@ -14,6 +14,7 @@ class Dummy(Robot):
     def init(self, *args, size=None, opponents=None, **kwargs):
         self.battle_size = size
         self.opponents = opponents
+        self.value = 0.5
 
     def run(self):
         pass

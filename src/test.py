@@ -1,17 +1,21 @@
-from robots.app import App
-from robots.robot.utils import *
-from model import Model, Trainer
+import argparse
+import time
+
 import numpy as np
 import tensorflow as tf
-from wrapper import Dummy, AITrainingBattle
-from utils import TURNING, MOVING
-import time
-import argparse
+from robots.app import App
+from robots.robot.utils import *
+from robots.ui.utils import Colors
+
+from model import Model, Trainer
+from utils import MOVING, TURNING, cast
+from wrapper import AITrainingBattle, Dummy
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-v', "--verbose", action='store_true', help="Print debugging information.")
+    parser.add_argument('-s', "--sample", action='store_true', help="Using the probability sampling instead of argmax.")
     return parser.parse_args()
 
 
@@ -24,6 +28,7 @@ size = (600, 600)
 app = App(size=size)
 
 battle = AITrainingBattle(robots, size)
+battle.bw.overlay.bars.append(('value', Colors.B, Colors.R))
 app.child = battle
 # Use the eng create by battle
 eng = battle.eng
@@ -34,44 +39,11 @@ eng.ENERGY_DECAY_ENABLED = True
 eng.GUN_HEAT_ENABLED = True
 eng.BULLET_COLLISIONS_ENABLED = False
 
+@cast(tf.float32)
+def get_obs():
+    return tf.reshape(tf.stack([r.get_obs() for r in eng.robots]), (2, -1))
 
-def get_obs(r):
-    s = np.array(size)
-    center = s//2
-    direction = np.sin(r.bearing * np.pi / 180), np.cos(r.bearing * np.pi / 180)
-    turret = np.sin(r.turret_bearing * np.pi / 180), np.cos(r.turret_bearing * np.pi / 180)
-    return tf.cast(tf.concat([
-        [(r.energy/50) - 1, r.turret_heat/30, r.velocity/8],
-        direction,
-        turret,
-        (r.position/center) - 1,
-        (r.position/size),
-    ], axis=0), tf.float32)
-
-
-def get_position(r):
-    return tf.cast(r.position/size, tf.float32)
-
-
-def assign_actions(action):
-    for i, robot in enumerate(robots):
-        # Apply actions
-        shoot, turn, move, turret = action[i]
-        if robot.turret_heat > 0:
-            shoot = 0
-        try:
-            robot.moving = MOVING[move]
-            robot.base_turning = TURNING[turn]
-            robot.turret_turning = TURNING[turret]
-            robot.should_fire = shoot > 0
-            robot.previous_energy = robot.energy
-        except Exception:
-            print("Failed assigning actions", i, turn, shoot)
-            raise
-    return action
-
-
-def main(debug=False):
+def main(debug=False, sample=False):
     eng.set_rate(60)
     while True:
         trainer = Trainer(model)
@@ -83,18 +55,21 @@ def main(debug=False):
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
-            obs = [get_obs(r) for r in robots]
-            obs = [tf.concat([obs[0], obs[1]], axis=0), tf.concat([obs[1], obs[0]], axis=0)]
-            obs_batch = tf.stack(obs)
-            action, value, states = model.run(obs_batch, states)
-            action = assign_actions(action)
+            obs = get_obs()
+            if sample:
+                actions, value, _, states = model.sample(obs, states)
+            else:
+                actions, value, states = model.run(obs, states)
+            for i, r in enumerate(eng.robots):
+                r.assign_actions(actions[i])
+                r.value = (value[i,0] + 1) / 2
             if debug:
-                for r in robots:
-                    print(r.base_color, r.position, r.moving, r.base_turning, r.turret_turning, r.should_fire)
-
+                for i, r in enumerate(robots):
+                    print(r.base_color, r.position, r.moving, r.base_turning,
+                          r.turret_turning, r.should_fire, actions[i], value[i])
             eng.step()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(debug=args.verbose)
+    main(debug=args.verbose, sample=args.sample)

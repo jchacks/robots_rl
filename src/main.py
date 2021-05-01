@@ -1,13 +1,27 @@
+import argparse
+import time
+
+import numpy as np
+import tensorflow as tf
 from robots.app import App
 from robots.engine import Engine
 from robots.robot.utils import *
-from model import Model, Trainer
-import numpy as np
-import tensorflow as tf
-from wrapper import Dummy, AITrainingBattle
-from utils import Memory, discounted, TURNING, MOVING
-import time
+
 import wandb
+from model import Model, Trainer
+from utils import Memory, discounted, Timer, cast
+from wrapper import Dummy
+
+timer = Timer()
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-v', "--verbose", action='store_true', help="Print debugging information.")
+    parser.add_argument('-n', "--envs", type=int, default=20, help="Number of envs to use for training.")
+    parser.add_argument('-s', "--steps", type=int, default=50, help="Number of steps to use for training.")
+    return parser.parse_args()
+
 
 ACTION_DIMS = (2, 3, 3, 3)
 model = Model(ACTION_DIMS)
@@ -37,13 +51,17 @@ class Runner(object):
             eng.states = tf.stack(model.lstm.get_initial_state(batch_size=2, dtype=tf.float32))
             eng.total_reward = {r: 0 for r in eng.robots}
 
+    @cast(tf.float32)
     def get_obs(self):
         return tf.reshape(
             tf.stack([[r.get_obs() for r in eng.robots] for eng in self.engines]),
             (self.num*2, -1)
         )
 
+    @cast(tf.float32)
     def get_states(self):
+        """Retrieves states with correct dims that were previously saved as an 
+        attribute on the engine instances."""
         return tf.reshape(tf.stack([eng.states for eng in self.engines], axis=1), (2, self.num*2, -1))
 
     def run(self):
@@ -92,11 +110,13 @@ class Runner(object):
                 eng.init()
                 eng.states = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
 
-    def train(self,):
+    def train(self):
         observations = self.get_obs()
         states = self.get_states()
         _, last_values, _ = model.run(observations, states)
         last_values = tf.reshape(last_values, (self.num, 2, -1))
+
+        timer.split("prep")
 
         b_rewards = []
         b_action = []
@@ -119,13 +139,20 @@ class Runner(object):
             # Clear memories of old data
             eng.memories = {r: Memory('rewards,action,neglogp,values,obs,state,dones') for r in eng.robots}
 
+        print("Prepping times", timer.since("prep"), timer.last_diff("prep"))
+
         b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
         b_action = tf.concat(b_action, axis=0)
         b_neglogp = tf.concat(b_neglogp, axis=0)
         b_values = tf.concat(b_values, axis=0)
         b_obs = tf.concat(b_obs, axis=0)
         b_states = tf.concat(b_states, axis=0)
+        timer.split("train")
+        # Pass data to trainer, managing the model.
         losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
+        # Checkpoint manager will save every x steps
+        trainer.checkpoint()
+        print("Training times", timer.since("train"), timer.last_diff("train"))
         wandb.log({
             "loss": losses[0],
             "actor": losses[1],
@@ -136,22 +163,27 @@ class Runner(object):
         })
         if np.isnan(losses[0].numpy()):
             raise RuntimeError
-        
 
-max_steps = 30
 
-# Initate WandB before running
-wandb.init(project='robots_rl', entity='jchacks')
-config = wandb.config
-config.rlenv = "all_actions"
-config.action_space = "2,3,3,3"
-config.max_steps = max_steps
-runner = Runner(100)
+def main(steps=50, envs=20):
+    # Initate WandB before running
+    wandb.init(project='robots_rl', entity='jchacks')
+    config = wandb.config
+    config.rlenv = "all_actions"
+    config.action_space = "2,3,3,3"
+    config.critic_scale = trainer.critic_scale
+    config.entropy_scale = trainer.entropy_scale
+    config.max_steps = steps
+    config.envs = envs
+    runner = Runner(envs)
 
-for iteration in range(1000000):
-    # Create a memory per player
-    steps = 0
-    for i in range(max_steps):
-        runner.run()
-    runner.train()
-    print(iteration)
+    for iteration in range(1000000):
+        for _ in range(steps):
+            runner.run()
+        runner.train()
+        print(iteration)
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    main(steps=args.steps, envs=args.envs)

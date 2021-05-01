@@ -40,7 +40,7 @@ class Model(tf.Module):
         super().__init__(name=name)
         self.action_space = action_space
         self.num_actions = np.sum(action_space)
-        self.lstm = layers.LSTMCell(units=512)
+        self.lstm = layers.LSTMCell(units=512,)
         self.d1 = layers.Dense(512, activation='relu')
         self.d2 = layers.Dense(512, activation='relu')
         self.actor = Actor(self.num_actions)
@@ -49,6 +49,7 @@ class Model(tf.Module):
     @tf.Module.with_name_scope
     def __call__(self, obs, states):
         latent, states = self.lstm(obs, states=states)
+        latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
         latent = self.d2(latent)
         return self.actor(latent), self.critic(latent), states
@@ -77,9 +78,10 @@ class Trainer(object):
     def __init__(self,
                  model,
                  save_path='../ckpts',
-                 interval=500,
+                 interval=100,
                  critic_scale=0.5,
-                 entropy_scale=0.05) -> None:
+                 entropy_scale=0.002,
+                 learning_rate=3e-3) -> None:
         """Class to manage training a model.
         Contains Optimiser and CheckpointManager.
 
@@ -88,9 +90,9 @@ class Trainer(object):
             save_path (str, optional): Checkpoint path. Defaults to '../ckpts'.
             interval (int, optional): Interval on which to save checkpoints. Defaults to 500.
             critic_scale (float, optional): Scale of critic in the loss function. Defaults to 0.2.
-            entropy_scale (float, optional): Scale of entorpy in the loss function. Defaults to 0.05.
+            entropy_scale (float, optional): Scale of entropy in the loss function. Defaults to 0.05.
         """
-        self.optimiser = tf.keras.optimizers.Adam(learning_rate=7e-4, epsilon=1e-5)
+        self.optimiser = tf.keras.optimizers.Adam(learning_rate=learning_rate, epsilon=1e-5)
         self.model = model
         self.ckpt = tf.train.Checkpoint(
             step=tf.Variable(1),
@@ -113,6 +115,7 @@ class Trainer(object):
         if save_path:
             print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
 
+    @tf.function
     def train(self,
               observations,
               states,
@@ -137,6 +140,7 @@ class Trainer(object):
         Returns:
             [type]: [description]
         """
+        print("Tracing train function")
         observations = tf.cast(observations, tf.float32)
         rewards = tf.cast(rewards, tf.float32)
 
@@ -170,8 +174,6 @@ class Trainer(object):
         # Apply grads
         grads_and_vars = zip(grads, training_variables)
         self.optimiser.apply_gradients(grads_and_vars)
-
-        self.checkpoint()
 
         d_grads = tf.reduce_mean([tf.reduce_mean(g) for g in grads])
         d_val = tf.reduce_mean(vpred)

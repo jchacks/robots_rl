@@ -9,7 +9,7 @@ from distributions import MultiCategoricalProbabilityDistribution
 class Critic(tf.Module):
     def __init__(self, name='critic') -> None:
         super().__init__(name=name)
-        self.d2 = layers.Dense(64, activation='relu')
+        self.d2 = layers.Dense(256, activation='relu')
         self.d3 = layers.Dense(64, activation='relu')
         self.o = layers.Dense(1)
 
@@ -24,8 +24,8 @@ class Actor(tf.Module):
     def __init__(self, num_actions, name='actor'):
         super().__init__(name=name)
         self.num_actions = num_actions
-        self.d1 = layers.Dense(128, activation='relu')
-        self.d2 = layers.Dense(64, activation='relu')
+        self.d1 = layers.Dense(256, activation='relu')
+        self.d2 = layers.Dense(256, activation='relu')
         self.o = layers.Dense(num_actions)
 
     @tf.Module.with_name_scope
@@ -40,8 +40,8 @@ class Model(tf.Module):
         super().__init__(name=name)
         self.action_space = action_space
         self.num_actions = np.sum(action_space)
-        self.lstm = layers.LSTMCell(units=512,)
-        self.d1 = layers.Dense(512, activation='relu')
+        self.lstm = layers.LSTMCell(units=1024,)
+        self.d1 = layers.Dense(1024, activation='relu')
         self.d2 = layers.Dense(512, activation='relu')
         self.actor = Actor(self.num_actions)
         self.critic = Critic()
@@ -78,10 +78,10 @@ class Trainer(object):
     def __init__(self,
                  model,
                  save_path='../ckpts',
-                 interval=100,
-                 critic_scale=0.5,
-                 entropy_scale=0.002,
-                 learning_rate=3e-3) -> None:
+                 interval=50,
+                 critic_scale=0.3,
+                 entropy_scale=0.05,
+                 learning_rate=7e-4) -> None:
         """Class to manage training a model.
         Contains Optimiser and CheckpointManager.
 
@@ -123,7 +123,7 @@ class Trainer(object):
               actions,
               neglogp,
               values,
-              norm_advs=False,
+              norm_advs=True,
               print_grads=False):
         """[summary]
 
@@ -145,6 +145,8 @@ class Trainer(object):
         rewards = tf.cast(rewards, tf.float32)
 
         advantage = rewards - values
+        # Record the mean advs before norm for debugging
+        d_adv = tf.reduce_mean(advantage)
         if norm_advs:
             advantage = (advantage - tf.reduce_mean(advantage)) / (tf.math.reduce_std(advantage) + 1e-8)
 
@@ -152,8 +154,9 @@ class Trainer(object):
             logits, vpred, _ = self.model(observations, states=states)
             pd = self.model.distribution(logits)
 
-            ratio = tf.exp(neglogp - pd.neglogp(actions)[:, tf.newaxis])
-            a_losses = advantage * ratio
+            # ratio = tf.exp(neglogp - pd.neglogp(actions)[:, tf.newaxis])
+            # a_losses = advantage * ratio
+            a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]  # old loss
             a_loss = tf.reduce_mean(a_losses)
 
             # Value function loss
@@ -177,7 +180,6 @@ class Trainer(object):
 
         d_grads = tf.reduce_mean([tf.reduce_mean(g) for g in grads])
         d_val = tf.reduce_mean(vpred)
-        d_adv = tf.reduce_mean(advantage)
         return (
             loss,
             a_loss,

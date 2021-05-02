@@ -3,7 +3,7 @@ import operator
 import time
 from functools import reduce
 from collections import defaultdict, deque
-
+from contextlib import contextmanager
 import numba as nb
 import numpy as np
 import tqdm
@@ -24,39 +24,35 @@ def cast(dtype):
 
 class Timer(object):
     def __init__(self, maxlen=10):
-        self.times = deque(maxlen=maxlen)
-        self.splits = defaultdict(lambda: deque(maxlen=maxlen))
+        self.splits = {}
+        self.diffs = defaultdict(lambda: deque(maxlen=maxlen))
+        self.times_called = defaultdict(int)
 
-    def block(self):
-        start = time.time()
+    @contextmanager
+    def ctx(self, name=""):
+        self.split(name)
         yield
-        end = time.time()
-        self.times.append(end - start)
-
-    def time(self, func):
-        def inner(*args, **kwargs):
-            start = time.time()
-            res = func(*args, **kwargs)
-            end = time.time()
-            self.times.append(end - start)
-            return res
-        return inner
+        self.add_diff(name)
 
     def split(self, name=""):
-        self.splits[name].append(time.time())
+        self.splits[name] = time.time()
 
-    def since(self, name=""):
-        return time.time() - self.splits[name][-1]
+    def diff(self, name=""):
+        return time.time() - self.splits[name]
 
-    def last_diff(self, name=""):
-        if len(self.splits[name]) > 1:
-            return self.splits[name][-1] - self.splits[name][-2]
-        else:
-            return np.nan
+    def add_diff(self, name=""):
+        self.times_called[name] += 1
+        diff = self.diff(name)
+        self.diffs[name].append(diff)
+        return diff
 
-    def mean_diff(self, name=""):
-        times = np.array(self.splits[name])
-        return np.mean(times[1:] - times[:-1])
+    def mean_diffs(self, name=""):
+        diffs = self.diffs.get(name, None)
+        if diffs is None:
+            raise KeyError(f"Key '{name}' not found.")
+        num = self.times_called[name]
+        self.times_called[name] = 0
+        return np.mean(diffs) * num
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -79,24 +75,6 @@ def make_logger():
     logger.setLevel("DEBUG")
     logger.addHandler(TqdmLoggingHandler())
     return logger
-
-
-class Memory(object):
-    def __init__(self, stores: str) -> None:
-        self.items = stores.split(',')
-        self.data = {k: [] for k in self.items}
-
-    def append(self, **kwargs):
-        if set(kwargs.keys()) != set(self.data.keys()):
-            raise KeyError("kwargs keys should be the same as data")
-        for k, v in kwargs.items():
-            self.data[k].append(v)
-
-    def __getitem__(self, item):
-        return self.data[item]
-
-    def clear(self):
-        self.data = {k: [] for k in self.items}
 
 
 def discounted(rewards, dones, last_value, gamma=0.99):

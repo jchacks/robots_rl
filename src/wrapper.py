@@ -11,10 +11,10 @@ class AITrainingBattle(Battle):
 
 
 class Dummy(Robot):
-    def init(self, *args, size=None, opponents=None, **kwargs):
+    def init(self, size=None, **kwargs):
         self.battle_size = size
-        self.opponents = opponents
-        self.value = 0.5
+        self.value = .0
+        self.opponents = [r for r in kwargs["all_robots"] if r != self]
 
     def run(self):
         pass
@@ -33,7 +33,21 @@ class Dummy(Robot):
         ], axis=0)
 
     def get_obs(self):
-        return np.concatenate([self.get_state()] + [state() for state in self.opponents])
+        oppo_data = []
+        size = np.array(self.battle_size)
+        center = size//2
+
+        for r in self.opponents:
+            attrs = r.get_visible_attrs()
+            oppo_data.append(np.array([
+                attrs['energy']/100,
+                *(self.position - attrs['position'])/center,
+                *attrs['direction'],
+                *attrs['turret_direction'],
+                attrs['velocity']/8
+            ]))
+
+        return np.concatenate([self.get_state()] + oppo_data)
 
     def assign_actions(self, action):
         # Apply actions

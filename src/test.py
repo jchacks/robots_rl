@@ -22,6 +22,7 @@ def parse_args():
 ACTION_DIMS = (2, 3, 3, 3)
 model = Model(ACTION_DIMS)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
+
 size = (600, 600)
 
 
@@ -32,6 +33,14 @@ battle.bw.overlay.bars.append(('value', Colors.B, Colors.R))
 app.child = battle
 # Use the eng create by battle
 eng = battle.eng
+robot_map = {}
+inv_robot_map = {}
+for robot in eng.robots:
+    idx = len(robot_map)
+    robot_map[idx] = robot
+    inv_robot_map[robot] = idx
+
+
 app.console.add_command("sim", eng.set_rate, help="Sets the Simulation rate.")
 
 # Simplify battles
@@ -39,9 +48,18 @@ eng.ENERGY_DECAY_ENABLED = True
 eng.GUN_HEAT_ENABLED = True
 eng.BULLET_COLLISIONS_ENABLED = False
 
+
 @cast(tf.float32)
 def get_obs():
-    return tf.reshape(tf.stack([r.get_obs() for r in eng.robots]), (2, -1))
+    return tf.stack([robot_map[i].get_obs() for i in range(len(robot_map))])
+
+
+@cast(tf.float32)
+def get_states():
+    """Retrieves states with correct dims that were previously saved as an 
+    attribute on the engine instances."""
+    return tf.stack([robot_map[i].lstmstate for i in range(len(robot_map))], axis=1)
+
 
 def main(debug=False, sample=False):
     eng.set_rate(60)
@@ -49,20 +67,25 @@ def main(debug=False, sample=False):
         trainer = Trainer(model)
         trainer.restore(partial=True)
         eng.init()
-        states = model.lstm.get_initial_state(batch_size=2, dtype=tf.float32)
+        for robot in eng.robots:
+            robot.lstmstate = tf.stack(model.lstm.get_initial_state(batch_size=1, dtype=tf.float32))[:, 0]
         print("Running test")
         while not eng.is_finished():
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
             obs = get_obs()
+            states = get_states()
             if sample:
-                actions, value, _, states = model.sample(obs, states)
+                actions, value, _, new_states = model.sample(obs, states)
             else:
-                actions, value, states = model.run(obs, states)
+                actions, value, new_states = model.run(obs, states)
+            new_states = np.stack(new_states)
             for i, r in enumerate(eng.robots):
                 r.assign_actions(actions[i])
-                r.value = (value[i,0] + 1) / 2
+                r.lstmstate = new_states[:, i]
+                r.value = (value[i, 0] + 1) / 2
+
             if debug:
                 for i, r in enumerate(robots):
                     print(r.base_color, r.position, r.moving, r.base_turning,

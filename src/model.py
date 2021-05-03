@@ -52,7 +52,10 @@ class Model(tf.Module):
         latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
         latent = self.d2(latent)
-        return self.actor(latent), self.critic(latent), states
+        return self.actor(latent), self.critic(latent), tf.stack(states)
+
+    def initial_state(self, batch_size):
+        return tf.stack(self.lstm.get_initial_state(batch_size=batch_size, dtype=tf.float32))
 
     def distribution(self, logits):
         return MultiCategoricalProbabilityDistribution(self.action_space, logits)
@@ -65,13 +68,13 @@ class Model(tf.Module):
     def sample(self, obs, states):
         logits, value, states = self(obs, states)
         dist = self.distribution(logits)
-        actions = dist.sample().numpy()
-        return actions, value.numpy(), dist.neglogp(actions).numpy(), states
+        actions = dist.sample()
+        return actions.numpy(), value.numpy(), dist.neglogp(actions).numpy(), states.numpy()
 
     def run(self, obs, states):
         logits, value, states = self(obs, states)
         dist = self.distribution(logits)
-        return dist.mode().numpy(), value.numpy(), states
+        return dist.mode().numpy(), value.numpy(), states.numpy()
 
 
 class Trainer(object):

@@ -9,24 +9,24 @@ from distributions import MultiCategoricalProbabilityDistribution
 class Critic(tf.Module):
     def __init__(self, name='critic') -> None:
         super().__init__(name=name)
-        self.d2 = layers.Dense(256, activation='relu')
-        self.d3 = layers.Dense(64, activation='relu')
+        self.d1 = layers.Dense(32, activation='relu')
+        self.d2 = layers.Dense(32, activation='relu')
         self.o = layers.Dense(1)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
+        x = self.d1(x)
         x = self.d2(x)
-        x = self.d3(x)
         return self.o(x)
 
 
 class Actor(tf.Module):
-    def __init__(self, num_actions, name='actor'):
+    def __init__(self, action_space, name='actor'):
         super().__init__(name=name)
-        self.num_actions = num_actions
-        self.d1 = layers.Dense(256, activation='relu')
-        self.d2 = layers.Dense(256, activation='relu')
-        self.o = layers.Dense(num_actions)
+        self.num_actions = np.sum(action_space)
+        self.d1 = layers.Dense(32, activation='relu')
+        self.d2 = layers.Dense(32, activation='relu')
+        self.o = layers.Dense(self.num_actions) 
 
     @tf.Module.with_name_scope
     def __call__(self, x):
@@ -39,11 +39,12 @@ class Model(tf.Module):
     def __init__(self, action_space, name='model'):
         super().__init__(name=name)
         self.action_space = action_space
-        self.num_actions = np.sum(action_space)
-        self.lstm = layers.LSTMCell(units=1024,)
-        self.d1 = layers.Dense(1024, activation='relu')
-        self.d2 = layers.Dense(512, activation='relu')
-        self.actor = Actor(self.num_actions)
+        # Shared net
+        self.lstm = layers.LSTMCell(units=128,)
+        self.d1 = layers.Dense(64, activation='relu')
+        self.d2 = layers.Dense(32, activation='relu')
+
+        self.actor = Actor(self.action_space)
         self.critic = Critic()
 
     @tf.Module.with_name_scope

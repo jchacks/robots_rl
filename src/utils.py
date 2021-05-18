@@ -10,6 +10,7 @@ import tqdm
 from robots.robot.utils import *
 import tensorflow as tf
 
+# Action selection lists
 TURNING = [Turn.NONE, Turn.LEFT, Turn.RIGHT]
 MOVING = [Move.NONE, Move.FORWARD, Move.BACK]
 
@@ -29,30 +30,34 @@ class Timer(object):
         self.times_called = defaultdict(int)
 
     @contextmanager
-    def ctx(self, name=""):
+    def ctx(self, name="root"):
         self.split(name)
         yield
         self.add_diff(name)
 
-    def split(self, name=""):
+    def start(self, name="root"):
         self.splits[name] = time.time()
 
-    def diff(self, name=""):
+    def diff(self, name="root"):
         return time.time() - self.splits[name]
 
-    def add_diff(self, name=""):
+    def stop(self, name="root"):
         self.times_called[name] += 1
         diff = self.diff(name)
         self.diffs[name].append(diff)
+        del self.splits[name]
         return diff
 
-    def mean_diffs(self, name=""):
+    def mean_diffs(self, name="root"):
         diffs = self.diffs.get(name, None)
         if diffs is None:
             raise KeyError(f"Key '{name}' not found.")
         num = self.times_called[name]
         self.times_called[name] = 0
         return np.mean(diffs) * num
+
+    def log_str(self):
+        return '\n'.join([f"{k}: {self.mean_diffs(k)}" for k in self.diffs.keys()]) + '\n'
 
 
 class TqdmLoggingHandler(logging.Handler):

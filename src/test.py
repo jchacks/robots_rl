@@ -66,25 +66,32 @@ def main(debug=False, sample=False):
     while True:
         trainer = Trainer(model)
         trainer.restore(partial=True)
-        eng.init()
-        for robot in eng.robots:
-            robot.lstmstate = tf.stack(model.lstm.get_initial_state(batch_size=1, dtype=tf.float32))[:, 0]
+        eng.init(robot_kwargs={"all_robots": eng.robots})
+        robot_map = {}
+        inv_robot_map = {}
+        for i, robot in enumerate(eng.robots):
+            robot_map[i] = robot
+            inv_robot_map[robot] = i
+            robot.memory = []
+            
+        _states = model.initial_state(len(robot_map))
         print("Running test")
         while not eng.is_finished():
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
             obs = get_obs()
-            states = get_states()
+            states = tf.unstack(tf.cast(_states, tf.float32))
             if sample:
                 actions, value, _, new_states = model.sample(obs, states)
             else:
                 actions, value, new_states = model.run(obs, states)
-            new_states = np.stack(new_states)
-            for i, r in enumerate(eng.robots):
-                r.assign_actions(actions[i])
-                r.lstmstate = new_states[:, i]
-                r.value = (value[i, 0] + 1) / 2
+
+            for i, robot in robot_map.items():
+                robot.assign_actions(actions[i])
+                robot.value = (value[i, 0] + 1) / 2
+
+            _states = new_states
 
             if debug:
                 for i, r in enumerate(robots):

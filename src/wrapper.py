@@ -13,7 +13,7 @@ class AITrainingBattle(Battle):
 class Dummy(Robot):
     def init(self, size=None, **kwargs):
         self.battle_size = size
-        self.value = .0
+        self.value = .0 # Used for displaying predicted value
         self.opponents = [r for r in kwargs["all_robots"] if r != self]
 
     def run(self):
@@ -35,15 +35,14 @@ class Dummy(Robot):
     def get_obs(self):
         oppo_data = []
         size = np.array(self.battle_size)
-        center = size//2
-
         for r in self.opponents:
             attrs = r.get_visible_attrs()
+            v = self.position - attrs['position']
+            d = np.sqrt(np.sum(v**2))
             oppo_data.append(np.array([
                 attrs['energy']/100,
-                *(self.position - attrs['position'])/center,
-                *attrs['direction'],
-                *attrs['turret_direction'],
+                d,
+                *(v/d),
                 attrs['velocity']/8
             ]))
 

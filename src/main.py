@@ -1,4 +1,5 @@
 import argparse
+import random
 import time
 
 import numpy as np
@@ -9,7 +10,7 @@ from robots.robot.utils import *
 
 import wandb
 from model import Model, Trainer
-from utils import discounted, Timer, cast
+from utils import Timer, cast, discounted
 from wrapper import Dummy
 
 WANDBOFF = True
@@ -32,10 +33,19 @@ trainer = Trainer(model)
 trainer.restore()
 
 
+class TrainingEngine(Engine):
+    def init_robotdata(self, robot):
+        robot.position = np.random.uniform(np.array(self.size)//2)
+        robot.base_rotation = random.random() * 360
+        robot.turret_rotation = random.random() * 360
+        robot.radar_rotation = robot.turret_rotation
+        robot.energy = random.randint(10, 100) # Randomize starting hp
+
+
 def make_eng():
     robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
     size = (600, 600)
-    eng = Engine(robots, size)
+    eng = TrainingEngine(robots, size)
 
     # Simplify battles
     eng.ENERGY_DECAY_ENABLED = True
@@ -67,7 +77,11 @@ class Runner(object):
         self.states = model.initial_state(len(self.robot_map))
 
     def run(self):
-        timer.split("run")
+        timer.start("run")
+
+        # Use this to only update non_done robots
+        pre_alive = [(i, robot) for i, robot in self.robot_map.items() if robot.alive]
+
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
         actions, values, neglogps, new_states = model.sample(observations, states)
@@ -76,27 +90,23 @@ class Runner(object):
         for i, robot in self.robot_map.items():
             robot.assign_actions(actions[i])
 
-        # Use this to only update non_done robots
-        pre_alive = [(i, robot) for i, robot in self.robot_map.items() if robot.alive]
-
-        timer.split("step")
+        timer.start("step")
         for i, eng in enumerate(self.engines):
             eng.step()
-        timer.add_diff("step")
-        timer.split("memetc")
+        timer.stop("step")
 
+        timer.start("post")
         for idx, robot in pre_alive:
             done = not robot.alive
-            reward = (robot.energy-robot.previous_energy)/100
+            reward = (robot.energy-robot.previous_energy-0.01)/100
             if done:
                 # Zero out the index for the done robot
                 new_states[:, idx] = 0
                 if robot.energy > 0:
-                    reward += 1 + robot.energy  # How about this?
+                    reward += 1 + robot.energy/100
                 else:
                     reward -= 1
-
-            timer.split("mem")
+            timer.start("mem")
             robot.memory.append((
                 reward,
                 actions[idx],
@@ -106,24 +116,31 @@ class Runner(object):
                 self.states[:, idx],
                 done
             ))
-            timer.add_diff('mem')
+            timer.stop("mem")
+
+
+        timer.stop("post")
 
         # Overwrite state tracking with new states
         self.states = new_states
 
         for eng in self.engines:
+            # If finished clean up
             if eng.is_finished():
+                # Reset LSTMS states
+                for robot in eng.robots:
+                    self.states[:, self.inv_robot_map[robot]] = 0
+                # Reset the engine
                 eng.init(robot_kwargs={"all_robots": eng.robots})
 
-        timer.add_diff("memetc")
-        timer.add_diff("run")
+        timer.stop("run")
 
     def train(self):
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
         _, last_values, _ = model.run(observations, states)
 
-        timer.split("prep")
+        timer.start("prep")
 
         b_rewards = []
         b_action = []
@@ -138,7 +155,7 @@ class Runner(object):
             # Clear memories of old data
             robot.memory = []
 
-            disc_reward = discounted(np.array(rewards), np.array(dones), last_values[i], 0.9)
+            disc_reward = discounted(np.array(rewards), np.array(dones), last_values[i], 0.99)
             b_rewards.append(disc_reward)
             b_action.append(actions)
             b_neglogp.append(neglogps)
@@ -146,7 +163,7 @@ class Runner(object):
             b_obs.append(observations)
             b_states.append(states)
 
-        timer.add_diff("prep")
+        timer.stop("prep")
 
         b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
         b_action = tf.concat(b_action, axis=0)
@@ -154,19 +171,15 @@ class Runner(object):
         b_values = tf.concat(b_values, axis=0)
         b_obs = tf.concat(b_obs, axis=0)
         b_states = tf.concat(b_states, axis=0)
-        timer.split("train")
+        timer.start("train")
         # Pass data to trainer, managing the model.
         losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
         # Checkpoint manager will save every x steps
         trainer.checkpoint()
-        timer.add_diff("train")
+        timer.stop("train")
 
-        print("Prepping times", timer.mean_diffs("prep"))
-        print("Training times", timer.mean_diffs("train"))
-        print("\tRunning times", timer.mean_diffs("run"))
-        print("\tStep", timer.mean_diffs("step"))
-        print("\tMem Etc.", timer.mean_diffs("memetc"))
-        print("\tMem", timer.mean_diffs("mem"))
+        print(timer.log_str())
+
         if not WANDBOFF:
             wandb.log({
                 "loss": losses[0],
@@ -198,16 +211,17 @@ def main(steps, envs, render=False, wandboff=False):
     if render:
         # Todo clean up this interaction with Engine and Battle
         from robots.app import App
+
         from wrapper import AITrainingBattle
 
-        app = App(size=(600, 600))
+        app = App(size=(600, 600), fps_target=60)
         eng = runner.engines[0]
         battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
         app.child = battle
         runner.app = app
 
     for iteration in range(1000000):
-        timer.split()
+        timer.start()
         # reset the lstm states
         runner.init_states()
         for _ in range(steps):
@@ -215,7 +229,7 @@ def main(steps, envs, render=False, wandboff=False):
             if render:
                 app.step()
         runner.train()
-        print(iteration, timer.add_diff(), timer.mean_diffs())
+        print(iteration, timer.stop(), timer.mean_diffs())
 
 
 if __name__ == "__main__":

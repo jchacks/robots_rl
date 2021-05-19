@@ -39,7 +39,7 @@ class TrainingEngine(Engine):
         robot.base_rotation = random.random() * 360
         robot.turret_rotation = random.random() * 360
         robot.radar_rotation = robot.turret_rotation
-        robot.energy = random.randint(10, 100)  # Randomize starting hp
+        robot.energy = 100 #random.randint(10, 100)  # Randomize starting hp
 
 
 def make_eng():
@@ -98,12 +98,12 @@ class Runner(object):
         timer.start("post")
         for idx, robot in pre_alive:
             done = not robot.alive
-            reward = (robot.energy-robot.previous_energy-1)/100
+            reward = (robot.energy-robot.previous_energy)/100
             if done:
                 # Zero out the index for the done robot
                 new_states[:, idx] = 0
                 if robot.energy > 0:
-                    reward += 1 + robot.energy/100
+                    reward += 1 + robot.energy
                 else:
                     reward -= 1
             timer.start("mem")
@@ -154,7 +154,7 @@ class Runner(object):
             # Clear memories of old data
             robot.memory = []
 
-            disc_reward = discounted(np.array(rewards), np.array(dones), last_values[i], 0.99)
+            disc_reward = discounted(np.array(rewards), np.array(dones), last_values[i], 0.9)
             b_rewards.append(disc_reward)
             b_action.append(actions)
             b_neglogp.append(neglogps)

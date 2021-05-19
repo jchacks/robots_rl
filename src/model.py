@@ -9,7 +9,7 @@ from distributions import MultiCategoricalProbabilityDistribution
 class Critic(tf.Module):
     def __init__(self, name='critic') -> None:
         super().__init__(name=name)
-        self.d1 = layers.Dense(64, activation='relu')
+        self.d1 = layers.Dense(256, activation='relu')
         self.d2 = layers.Dense(64, activation='relu')
         self.o = layers.Dense(1)
 
@@ -24,7 +24,7 @@ class Actor(tf.Module):
     def __init__(self, action_space, name='actor'):
         super().__init__(name=name)
         self.num_actions = np.sum(action_space)
-        self.d1 = layers.Dense(128, activation='relu')
+        self.d1 = layers.Dense(256, activation='relu')
         self.d2 = layers.Dense(64, activation='relu')
         self.o = layers.Dense(self.num_actions) 
 
@@ -40,18 +40,19 @@ class Model(tf.Module):
         super().__init__(name=name)
         self.action_space = action_space
         # Shared net
-        self.p1 = layers.Dense(256, activation='relu')
-        self.lstm = layers.LSTMCell(units=256,)
-        self.d1 = layers.Dense(128, activation='relu')
-        self.d2 = layers.Dense(128, activation='relu')
+        self.lstm = layers.LSTMCell(units=512,)
+        self.s1 = layers.Dense(512, activation='relu')
+
+        self.d1 = layers.Dense(1024, activation='relu')
+        self.d2 = layers.Dense(512, activation='relu')
 
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
     @tf.Module.with_name_scope
     def __call__(self, obs, states):
-        pre_lstm = self.p1(obs)
-        latent, states = self.lstm(pre_lstm, states=states)
+        latent, states = self.lstm(obs, states=states)
+        obs = self.s1(obs) # Scaling layer
         latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
         latent = self.d2(latent)
@@ -121,7 +122,6 @@ class Trainer(object):
         if save_path:
             print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
 
-    @tf.function
     def train(self,
               observations,
               states,

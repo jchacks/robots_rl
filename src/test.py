@@ -1,9 +1,11 @@
 import argparse
 import time
+import random
 
 import numpy as np
 import tensorflow as tf
 from robots.app import App
+from robots.engine import Engine
 from robots.robot.utils import *
 from robots.ui.utils import Colors
 
@@ -22,17 +24,31 @@ def parse_args():
 ACTION_DIMS = (2, 3, 3, 3)
 model = Model(ACTION_DIMS)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-
 size = (600, 600)
-
-
 app = App(size=size)
 
-battle = AITrainingBattle(robots, size)
+class TestingEngine(Engine):
+    def init_robotdata(self, robot):
+        robot.position = np.random.uniform(np.array(self.size))
+        robot.base_rotation = random.random() * 360
+        robot.turret_rotation = random.random() * 360
+        robot.radar_rotation = robot.turret_rotation
+        robot.energy = 100
+
+
+eng = TestingEngine(robots, size)
+
+# Simplify battles
+eng.ENERGY_DECAY_ENABLED = False
+eng.GUN_HEAT_ENABLED = True
+eng.BULLET_COLLISIONS_ENABLED = False
+
+battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
 battle.bw.overlay.bars.append(('value', Colors.B, Colors.R))
 app.child = battle
 # Use the eng create by battle
-eng = battle.eng
+
+
 robot_map = {}
 inv_robot_map = {}
 for robot in eng.robots:
@@ -44,7 +60,7 @@ for robot in eng.robots:
 app.console.add_command("sim", eng.set_rate, help="Sets the Simulation rate.")
 
 # Simplify battles
-eng.ENERGY_DECAY_ENABLED = True
+eng.ENERGY_DECAY_ENABLED = False
 eng.GUN_HEAT_ENABLED = True
 eng.BULLET_COLLISIONS_ENABLED = False
 

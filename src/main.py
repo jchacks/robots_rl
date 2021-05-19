@@ -35,11 +35,11 @@ trainer.restore()
 
 class TrainingEngine(Engine):
     def init_robotdata(self, robot):
-        robot.position = np.random.uniform(np.array(self.size))
+        robot.position = np.random.normal(np.array(self.size)/2, 80)  # np.random.uniform(np.array(self.size))
         robot.base_rotation = random.random() * 360
         robot.turret_rotation = random.random() * 360
         robot.radar_rotation = robot.turret_rotation
-        robot.energy = 100 #random.randint(10, 100)  # Randomize starting hp
+        robot.energy = random.randint(10, 100)  # Randomize starting hp
 
 
 def make_eng():
@@ -48,7 +48,7 @@ def make_eng():
     eng = TrainingEngine(robots, size)
 
     # Simplify battles
-    eng.ENERGY_DECAY_ENABLED = True
+    eng.ENERGY_DECAY_ENABLED = False
     eng.GUN_HEAT_ENABLED = True
     eng.BULLET_COLLISIONS_ENABLED = False
     return eng
@@ -57,24 +57,28 @@ def make_eng():
 class Runner(object):
     def __init__(self, num) -> None:
         self.num = num
+        self.gamma = 0.99  # discounted factor
+
         self.engines = [make_eng() for _ in range(num)]
+        self.robots = []
         self.robot_map = {}
         self.inv_robot_map = {}
 
         for eng in self.engines:
             eng.init(robot_kwargs={"all_robots": eng.robots})
             for robot in eng.robots:
-                idx = len(self.robot_map)
+                idx = len(self.robots)
+                self.robots.append(robot)
                 self.robot_map[idx] = robot
                 self.inv_robot_map[robot] = idx
                 robot.memory = []
 
     @cast(tf.float32)
     def get_obs(self):
-        return tf.stack([self.robot_map[i].get_obs() for i in range(len(self.robot_map))])
+        return tf.stack([r.get_obs() for r in self.robots])
 
     def init_states(self,):
-        self.states = model.initial_state(len(self.robot_map))
+        self.states = model.initial_state(len(self.robots))
 
     def run(self):
         timer.start("run")
@@ -87,7 +91,7 @@ class Runner(object):
         actions, values, neglogps, new_states = model.sample(observations, states)
 
         # Assign actions and records the next states
-        for i, robot in self.robot_map.items():
+        for i, robot in enumerate(self.robots):
             robot.assign_actions(actions[i])
 
         timer.start("step")
@@ -98,12 +102,12 @@ class Runner(object):
         timer.start("post")
         for idx, robot in pre_alive:
             done = not robot.alive
-            reward = (robot.energy-robot.previous_energy)/100
+            reward = (robot.energy-robot.previous_energy-0.1)/100
             if done:
                 # Zero out the index for the done robot
                 new_states[:, idx] = 0
                 if robot.energy > 0:
-                    reward += 1 + robot.energy
+                    reward += 1 + robot.energy/100
                 else:
                     reward -= 1
             timer.start("mem")
@@ -154,7 +158,7 @@ class Runner(object):
             # Clear memories of old data
             robot.memory = []
 
-            disc_reward = discounted(np.array(rewards), np.array(dones), last_values[i], 0.9)
+            disc_reward = discounted(np.array(rewards), np.array(dones), last_values[i], self.gamma)
             b_rewards.append(disc_reward)
             b_action.append(actions)
             b_neglogp.append(neglogps)
@@ -162,14 +166,14 @@ class Runner(object):
             b_obs.append(observations)
             b_states.append(states)
 
-        timer.stop("prep")
-
         b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
         b_action = tf.concat(b_action, axis=0)
         b_neglogp = tf.concat(b_neglogp, axis=0)
         b_values = tf.concat(b_values, axis=0)
         b_obs = tf.concat(b_obs, axis=0)
         b_states = tf.concat(b_states, axis=0)
+        timer.stop("prep")
+
         timer.start("train")
         # Pass data to trainer, managing the model.
         losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
@@ -181,6 +185,7 @@ class Runner(object):
 
         if not WANDBOFF:
             wandb.log({
+                "rewards": b_rewards.numpy().mean(),
                 "loss": losses[0],
                 "actor": losses[1],
                 "critic": losses[2],

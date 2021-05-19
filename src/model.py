@@ -25,7 +25,7 @@ class Actor(tf.Module):
         super().__init__(name=name)
         self.num_actions = np.sum(action_space)
         self.d1 = layers.Dense(256, activation='relu')
-        self.d2 = layers.Dense(64, activation='relu')
+        self.d2 = layers.Dense(256, activation='relu')
         self.o = layers.Dense(self.num_actions) 
 
     @tf.Module.with_name_scope
@@ -39,13 +39,10 @@ class Model(tf.Module):
     def __init__(self, action_space, name='model'):
         super().__init__(name=name)
         self.action_space = action_space
-        # Shared net
         self.lstm = layers.LSTMCell(units=512,)
         self.s1 = layers.Dense(512, activation='relu')
-
         self.d1 = layers.Dense(1024, activation='relu')
         self.d2 = layers.Dense(512, activation='relu')
-
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
@@ -87,8 +84,8 @@ class Trainer(object):
                  save_path='../ckpts',
                  interval=50,
                  critic_scale=0.3,
-                 entropy_scale=0.05,
-                 learning_rate=7e-4) -> None:
+                 entropy_scale=0.04,
+                 learning_rate=2e-3) -> None:
         """Class to manage training a model.
         Contains Optimiser and CheckpointManager.
 
@@ -121,7 +118,8 @@ class Trainer(object):
         save_path = self.manager.save()
         if save_path:
             print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
-
+    
+    @tf.function
     def train(self,
               observations,
               states,

@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument('-v', "--verbose", action='store_true', help="Print debugging information.")
     parser.add_argument("--wandboff", action='store_true', help="Turn off W&B logging.")
     parser.add_argument('-r', "--render", action='store_true', help="Render battles during training.")
-    parser.add_argument('-n', "--envs", type=int, default=50, help="Number of envs to use for training.")
+    parser.add_argument('-n', "--envs", type=int, default=100, help="Number of envs to use for training.")
     parser.add_argument('-s', "--steps", type=int, default=100, help="Number of steps to use for training.")
     return parser.parse_args()
 
@@ -35,7 +35,7 @@ trainer.restore()
 
 class TrainingEngine(Engine):
     def init_robotdata(self, robot):
-        robot.position = np.random.normal(np.array(self.size)/2, 80)  # np.random.uniform(np.array(self.size))
+        robot.position = np.random.uniform(np.array(self.size))
         robot.base_rotation = random.random() * 360
         robot.turret_rotation = random.random() * 360
         robot.radar_rotation = robot.turret_rotation
@@ -97,12 +97,17 @@ class Runner(object):
         timer.start("step")
         for i, eng in enumerate(self.engines):
             eng.step()
+            # If going too long then kill both
+            if eng.steps >= 500:
+                for robot in eng.data:
+                    robot.energy = 0
+
         timer.stop("step")
 
         timer.start("post")
         for idx, robot in pre_alive:
             done = not robot.alive
-            reward = (robot.energy-robot.previous_energy-0.1)/100
+            reward = (robot.energy-robot.previous_energy-1)/100
             if done:
                 # Zero out the index for the done robot
                 new_states[:, idx] = 0

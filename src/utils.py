@@ -1,14 +1,15 @@
 import logging
-import operator
+import os
 import time
-from functools import reduce
 from collections import defaultdict, deque
 from contextlib import contextmanager
-import numba as nb
+
 import numpy as np
+import tensorflow as tf
 import tqdm
 from robots.robot.utils import *
-import tensorflow as tf
+
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + '/../')
 
 # Action selection lists
 TURNING = [Turn.NONE, Turn.LEFT, Turn.RIGHT]

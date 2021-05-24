@@ -1,22 +1,23 @@
-from numpy.lib.npyio import save
-from numpy.lib.utils import deprecate
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers
 from distributions import MultiCategoricalProbabilityDistribution
+from utils import PROJECT_ROOT
 
 
 class Critic(tf.Module):
     def __init__(self, name='critic') -> None:
         super().__init__(name=name)
-        self.d1 = layers.Dense(256, activation='relu')
-        self.d2 = layers.Dense(64, activation='relu')
+        self.d1 = layers.Dense(512, activation='relu')
+        self.d2 = layers.Dense(512, activation='relu')
+        self.d3 = layers.Dense(128, activation='relu')
         self.o = layers.Dense(1)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
         x = self.d2(x)
+        x = self.d3(x)
         return self.o(x)
 
 
@@ -24,14 +25,16 @@ class Actor(tf.Module):
     def __init__(self, action_space, name='actor'):
         super().__init__(name=name)
         self.num_actions = np.sum(action_space)
-        self.d1 = layers.Dense(256, activation='relu')
+        self.d1 = layers.Dense(512, activation='relu')
         self.d2 = layers.Dense(256, activation='relu')
-        self.o = layers.Dense(self.num_actions) 
+        self.d3 = layers.Dense(256, activation='relu')
+        self.o = layers.Dense(self.num_actions)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
         x = self.d2(x)
+        x = self.d3(x)
         return self.o(x)
 
 
@@ -39,17 +42,19 @@ class Model(tf.Module):
     def __init__(self, action_space, name='model'):
         super().__init__(name=name)
         self.action_space = action_space
+        self.p1 = layers.Dense(512, activation='relu')
         self.lstm = layers.LSTMCell(units=512,)
         self.s1 = layers.Dense(512, activation='relu')
         self.d1 = layers.Dense(1024, activation='relu')
-        self.d2 = layers.Dense(512, activation='relu')
+        self.d2 = layers.Dense(1024, activation='relu')
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
     @tf.Module.with_name_scope
     def __call__(self, obs, states):
-        latent, states = self.lstm(obs, states=states)
-        obs = self.s1(obs) # Scaling layer
+        pre = self.p1(obs)
+        latent, states = self.lstm(pre, states=states)
+        obs = self.s1(obs)  # Scaling layer
         latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
         latent = self.d2(latent)
@@ -81,11 +86,12 @@ class Model(tf.Module):
 class Trainer(object):
     def __init__(self,
                  model,
-                 save_path='../ckpts',
+                 save_path=f"{PROJECT_ROOT}/ckpts",
                  interval=50,
                  critic_scale=0.3,
-                 entropy_scale=0.04,
-                 learning_rate=2e-3) -> None:
+                 entropy_scale=0.05,
+                 learning_rate=1e-3,
+                 epsilon=0.2) -> None:
         """Class to manage training a model.
         Contains Optimiser and CheckpointManager.
 
@@ -112,14 +118,14 @@ class Trainer(object):
             checkpoint_interval=interval)
         self.critic_scale = critic_scale
         self.entropy_scale = entropy_scale
+        self.epsilon = epsilon
 
     def checkpoint(self):
         self.ckpt.step.assign_add(1)
         save_path = self.manager.save()
         if save_path:
             print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
-    
-    @tf.function
+
     def train(self,
               observations,
               states,
@@ -158,9 +164,15 @@ class Trainer(object):
             logits, vpred, _ = self.model(observations, states=states)
             pd = self.model.distribution(logits)
 
-            # ratio = tf.exp(neglogp - pd.neglogp(actions)[:, tf.newaxis])
+            # Actor loss
+
+            ratio = tf.exp(neglogp - pd.neglogp(actions))[:, tf.newaxis]
+            ratio_clipped = tf.clip_by_value(ratio, 1 - self.epsilon, 1 + self.epsilon)
+
+            l_clip = tf.minimum(advantage * ratio, advantage * ratio_clipped)
             # a_losses = advantage * ratio
-            a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]  # old loss
+            # a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]  # old loss
+            a_losses = -l_clip
             a_loss = tf.reduce_mean(a_losses)
 
             # Value function loss

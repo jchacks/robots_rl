@@ -80,7 +80,7 @@ def get_states():
 def main(debug=False, sample=False):
     eng.set_rate(60)
     while True:
-        trainer = Trainer(model)
+        trainer = Trainer(model, None)
         trainer.restore(partial=True)
         eng.init(robot_kwargs={"all_robots": eng.robots})
         robot_map = {}

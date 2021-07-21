@@ -4,15 +4,16 @@ https://github.com/openai/baselines/blob/master/baselines/common/distributions.p
 """
 
 import tensorflow as tf
+from tensorflow.python.ops import math_ops
 
 
-class ProbabilityDistribution(object):
+class Pd(object):
     """
     Base class for describing a probability distribution.
     """
 
     def __init__(self):
-        super(ProbabilityDistribution, self).__init__()
+        super(Pd, self).__init__()
 
     def flatparam(self):
         """
@@ -68,14 +69,14 @@ class ProbabilityDistribution(object):
         return - self.neglogp(x)
 
 
-class CategoricalProbabilityDistribution(ProbabilityDistribution):
+class CategoricalPd(Pd):
     def __init__(self, logits):
         """
         Probability distributions from categorical input
         :param logits: ([float]) the categorical logits input
         """
         self.logits = logits
-        super(CategoricalProbabilityDistribution, self).__init__()
+        super(CategoricalPd, self).__init__()
 
     def flatparam(self):
         return self.logits
@@ -122,12 +123,12 @@ class CategoricalProbabilityDistribution(ProbabilityDistribution):
         """
         Create an instance of this from new logits values
         :param flat: ([float]) the categorical logits input
-        :return: (ProbabilityDistribution) the instance from the given categorical input
+        :return: (Pd) the instance from the given categorical input
         """
         return cls(flat)
 
 
-class MultiCategoricalProbabilityDistribution(ProbabilityDistribution):
+class MultiCategoricalPd(Pd):
     def __init__(self, nvec, flat):
         """
         Probability distributions from multicategorical input
@@ -135,8 +136,8 @@ class MultiCategoricalProbabilityDistribution(ProbabilityDistribution):
         :param flat: ([float]) the categorical logits input
         """
         self.flat = flat
-        self.categoricals = list(map(CategoricalProbabilityDistribution, tf.split(flat, nvec, axis=-1)))
-        super(MultiCategoricalProbabilityDistribution, self).__init__()
+        self.categoricals = list(map(CategoricalPd, tf.split(flat, nvec, axis=-1)))
+        super(MultiCategoricalPd, self).__init__()
 
     def flatparam(self):
         return self.flat
@@ -155,15 +156,65 @@ class MultiCategoricalProbabilityDistribution(ProbabilityDistribution):
 
     def sample(self):
         return tf.stack([p.sample() for p in self.categoricals], axis=-1)
-        
+
     def prob(self):
         return [p.prob() for p in self.categoricals]
 
-    @classmethod
-    def fromflat(cls, flat):
-        """
-        Create an instance of this from new logits values
-        :param flat: ([float]) the multi categorical logits input
-        :return: (ProbabilityDistribution) the instance from the given multi categorical input
-        """
-        raise NotImplementedError
+    def logits(self):
+        return [p.logits for p in self.categoricals]
+
+
+class BernoulliPd(Pd):
+    def __init__(self, logits):
+        self.logits = logits
+        self.ps = tf.sigmoid(logits)
+
+    @property
+    def mean(self):
+        return self.ps
+
+    def mode(self):
+        return tf.cast(tf.round(self.ps), tf.int64)
+
+    def prob(self):
+        return self.ps
+
+    def neglogp(self, x):
+        return tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=tf.cast(x,tf.float32))
+
+    def kl(self, other):
+        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=other.logits, labels=self.ps), axis=-1) - tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps), axis=-1)
+
+    def entropy(self):
+        return tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps)
+
+    def sample(self):
+        u = tf.random.uniform(tf.shape(self.ps))
+        return tf.cast(u < self.ps, tf.int64)
+
+
+class GroupedPd(Pd):
+    def __init__(self, dists):
+        self.distributions = dists
+        super(GroupedPd, self).__init__()
+
+    def mode(self):
+        return tf.stack([p.mode() for p in self.distributions], axis=-1)
+
+    def neglogp(self, x):
+        return tf.add_n([p.neglogp(px) for p, px in zip(self.distributions, tf.unstack(x, axis=-1))])
+
+    def kl(self, other):
+        return tf.add_n([p.kl(q) for p, q in zip(self.distributions, other.distributions)])
+
+    def entropy(self):
+        return tf.add_n([p.entropy() for p in self.distributions])
+
+    def sample(self):
+        return tf.stack([p.sample() for p in self.distributions], axis=-1)
+
+    def prob(self):
+        return [p.prob() for p in self.distributions]
+
+    def logits(self):
+        return [p.logits for p in self.distributions]

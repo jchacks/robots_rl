@@ -27,9 +27,11 @@ def parse_args():
     return parser.parse_args()
 
 
-ACTION_DIMS = (2, 3, 3, 3)
+ACTION_DIMS = (1, 3, 3, 3)
 model = Model(ACTION_DIMS)
-trainer = Trainer(model)
+model = Model(ACTION_DIMS)
+old_model = Model(ACTION_DIMS, 'old_model')
+trainer = Trainer(model, old_model)
 trainer.restore()
 
 
@@ -56,6 +58,7 @@ def make_eng():
 
 class Runner(object):
     def __init__(self, num) -> None:
+        self.train_iteration = 0
         self.num = num
         self.gamma = 0.99  # discounted factor
 
@@ -147,6 +150,11 @@ class Runner(object):
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
         _, last_values, _ = model.run(observations, states)
+        if self.train_iteration == 0:
+            _ = old_model.run(observations, states)
+        
+        p, l, v = model.prob(observations, states)
+        print([p[0:4] for p in p], [l[0:4] for l in l], v[0:4])
 
         timer.start("prep")
 
@@ -180,9 +188,10 @@ class Runner(object):
         timer.stop("prep")
 
         timer.start("train")
-        # Pass data to trainer, managing the model.
-        losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
-        # Checkpoint manager will save every x steps
+        for i in range(3):
+            # Pass data to trainer, managing the model.
+            losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
+            # Checkpoint manager will save every x steps
         trainer.checkpoint()
         timer.stop("train")
 
@@ -200,6 +209,7 @@ class Runner(object):
             })
         if np.isnan(losses[0].numpy()):
             raise RuntimeError
+        self.train_iteration += 1
 
 
 def main(steps, envs, render=False, wandboff=False):
@@ -209,10 +219,10 @@ def main(steps, envs, render=False, wandboff=False):
     if not WANDBOFF:
         wandb.init(project='robots_rl', entity='jchacks')
         config = wandb.config
-        config.rlenv = "all_actions"
-        config.action_space = "2,3,3,3"
         config.critic_scale = trainer.critic_scale
         config.entropy_scale = trainer.entropy_scale
+        config.learning_rate = trainer.learning_rate
+        config.epsilon = trainer.epsilon
         config.max_steps = steps
         config.envs = envs
 

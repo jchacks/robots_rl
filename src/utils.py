@@ -39,7 +39,7 @@ class Timer(object):
 
     def stop(self, remove="root"):
         if remove != self.hier[-1]:
-            raise RuntimeError("Cannot remove unstarted timer.")
+            raise RuntimeError(f"Cannot remove unstarted timer {remove}.")
 
         name = tuple(self.hier)
         self.times_called[name] += 1
@@ -89,4 +89,4 @@ def discounted(rewards, dones, last_value, gamma=0.99):
     for reward, done in zip(rewards[::-1], dones[::-1]):
         r = reward + gamma * r * (1.0 - done)
         discounted.append(r)
-    return np.concatenate(discounted[::-1])
+    return np.stack(discounted[::-1])

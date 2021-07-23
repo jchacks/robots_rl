@@ -80,11 +80,13 @@ class Model(tf.Module):
         dist = self.distribution(logits, shoot_mask)
         return [prob.numpy() for prob in dist.prob()], [logit.numpy() for logit in dist.logits()], value.numpy()
 
+    @tf.function
     def sample(self, obs, states, shoot_mask):
+        print("Tracing sample")
         logits, value, states = self(obs, states)
         dist = self.distribution(logits, shoot_mask)
         actions = dist.sample()
-        return actions.numpy(), value.numpy(), dist.neglogp(actions).numpy(), states.numpy()
+        return actions, value, dist.neglogp(actions), states
 
     def run(self, obs, states, shoot_mask):
         logits, value, states = self(obs, states)
@@ -97,7 +99,7 @@ class Trainer(object):
                  model,
                  old_model,
                  save_path=f"{PROJECT_ROOT}/ckpts",
-                 interval=50,
+                 interval=10,
                  critic_scale=0.5,
                  entropy_scale=0.007,
                  learning_rate=7e-4,
@@ -185,7 +187,7 @@ class Trainer(object):
             neglogp = pd.neglogp(actions)
             # Actor loss
             # PPO
-            ratio = tf.exp(old_neglogp - neglogp)[:, tf.newaxis]
+            ratio = tf.exp(old_neglogp - neglogp)
             ratio_clipped = tf.clip_by_value(ratio, 1 - self.epsilon, 1 + self.epsilon)
 
             # a_losses = advantage * ratio
@@ -194,7 +196,7 @@ class Trainer(object):
             a_loss = - tf.reduce_mean(a_losses)
 
             # Value function loss
-            c_losses = (vpred - rewards) ** 2
+            c_losses = (vpred[:,0] - rewards) ** 2
             c_loss = tf.reduce_mean(c_losses)
 
             entropy_reg = tf.reduce_mean(pd.entropy())

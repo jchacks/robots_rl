@@ -21,7 +21,7 @@ def parse_args():
     return parser.parse_args()
 
 
-ACTION_DIMS = (2, 3, 3, 3)
+ACTION_DIMS = (1, 3, 3, 3)
 model = Model(ACTION_DIMS)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (600, 600)
@@ -76,6 +76,11 @@ def get_states():
     attribute on the engine instances."""
     return tf.stack([robot_map[i].lstmstate for i in range(len(robot_map))], axis=1)
 
+@cast(tf.bool)
+def get_shoot_mask():
+    return tf.stack([r.turret_heat > 0 for r in eng.robots])
+
+
 
 def main(debug=False, sample=False):
     eng.set_rate(60)
@@ -99,9 +104,9 @@ def main(debug=False, sample=False):
             obs = get_obs()
             states = tf.unstack(tf.cast(_states, tf.float32))
             if sample:
-                actions, value, _, new_states = model.sample(obs, states)
+                actions, value, _, new_states = model.sample(obs, states, get_shoot_mask())
             else:
-                actions, value, new_states = model.run(obs, states)
+                actions, value, new_states = model.run(obs, states, get_shoot_mask())
 
             for i, robot in robot_map.items():
                 robot.assign_actions(actions[i])

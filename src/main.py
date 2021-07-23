@@ -23,7 +23,7 @@ def parse_args():
     parser.add_argument("--wandboff", action='store_true', help="Turn off W&B logging.")
     parser.add_argument('-r', "--render", action='store_true', help="Render battles during training.")
     parser.add_argument('-n', "--envs", type=int, default=100, help="Number of envs to use for training.")
-    parser.add_argument('-s', "--steps", type=int, default=100, help="Number of steps to use for training.")
+    parser.add_argument('-s', "--steps", type=int, default=40, help="Number of steps to use for training.")
     return parser.parse_args()
 
 
@@ -33,7 +33,7 @@ model = Model(ACTION_DIMS)
 old_model = Model(ACTION_DIMS, 'old_model')
 trainer = Trainer(model, old_model)
 trainer.restore()
-
+trainer.copy_to_oldmodel()
 
 class TrainingEngine(Engine):
     def init_robotdata(self, robot):
@@ -50,19 +50,27 @@ def make_eng():
     eng = TrainingEngine(robots, size)
 
     # Simplify battles
-    eng.ENERGY_DECAY_ENABLED = False
+    eng.ENERGY_DECAY_ENABLED = True
     eng.GUN_HEAT_ENABLED = True
     eng.BULLET_COLLISIONS_ENABLED = False
     return eng
 
-
 class Runner(object):
-    def __init__(self, num) -> None:
+    def __init__(self, nenvs, steps) -> None:
         self.train_iteration = 0
-        self.num = num
-        self.gamma = 0.99  # discounted factor
+        self.nenvs = nenvs
+        self.steps = steps
+        self.gamma = 0.97  # discounted factor
 
-        self.engines = [make_eng() for _ in range(num)]
+        self.m_actions = np.zeros((steps, nenvs, len(ACTION_DIMS)))
+        self.m_values = np.zeros((steps, nenvs))
+        self.m_rewards = np.zeros((steps, nenvs))
+        self.m_neglogps = np.zeros((steps, nenvs))
+        self.m_observations = np.zeros((steps, nenvs, 16))
+        self.m_shoot_masks = np.zeros((steps, nenvs), np.bool)
+        self.m_dones = np.zeros((steps, nenvs), np.bool)
+
+        self.engines = [make_eng() for _ in range(nenvs)]
         self.robots = []
         self.robot_map = {}
         self.inv_robot_map = {}
@@ -79,6 +87,10 @@ class Runner(object):
     @cast(tf.float32)
     def get_obs(self):
         return tf.stack([r.get_obs() for r in self.robots])
+    
+    @cast(tf.bool)
+    def get_shoot_mask(self):
+        return tf.stack([r.turret_heat > 0 for r in self.robots])
 
     def init_states(self,):
         self.states = model.initial_state(len(self.robots))
@@ -91,7 +103,8 @@ class Runner(object):
 
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
-        actions, values, neglogps, new_states = model.sample(observations, states)
+        shoot_mask = self.get_shoot_mask()
+        actions, values, neglogps, new_states = model.sample(observations, states, shoot_mask)
 
         # Assign actions and records the next states
         for i, robot in enumerate(self.robots):
@@ -100,10 +113,10 @@ class Runner(object):
         timer.start("step")
         for i, eng in enumerate(self.engines):
             eng.step()
-            # If going too long then kill both
-            if eng.steps >= 500:
-                for robot in eng.data:
-                    robot.energy = 0
+            # # If going too long then kill both
+            # if eng.steps >= 500:
+            #     for robot in eng.data:
+            #         robot.energy = 0
 
         timer.stop("step")
 
@@ -118,6 +131,7 @@ class Runner(object):
                     reward += 1 + robot.energy/100
                 else:
                     reward -= 1
+            
             timer.start("mem")
             robot.memory.append((
                 reward,
@@ -126,6 +140,7 @@ class Runner(object):
                 neglogps[idx],
                 observations[idx],
                 self.states[:, idx],
+                shoot_mask[idx],
                 done
             ))
             timer.stop("mem")
@@ -135,6 +150,7 @@ class Runner(object):
         # Overwrite state tracking with new states
         self.states = new_states
 
+        # Move this out to train
         for eng in self.engines:
             # If finished clean up
             if eng.is_finished():
@@ -149,13 +165,11 @@ class Runner(object):
     def train(self):
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
-        _, last_values, _ = model.run(observations, states)
+        shoot_mask = self.get_shoot_mask()
+        _, last_values, _ = model.run(observations, states, shoot_mask)
         if self.train_iteration == 0:
-            _ = old_model.run(observations, states)
+            _ = old_model.run(observations, states, shoot_mask)
         
-        p, l, v = model.prob(observations, states)
-        print([p[0:4] for p in p], [l[0:4] for l in l], v[0:4])
-
         timer.start("prep")
 
         b_rewards = []
@@ -164,10 +178,11 @@ class Runner(object):
         b_values = []
         b_obs = []
         b_states = []
+        b_shoot_masks = []
 
         for i, robot in self.robot_map.items():
             # Take apart memories.
-            (rewards, actions, values, neglogps,  observations, states, dones) = zip(*robot.memory)
+            (rewards, actions, values, neglogps,  observations, states, shoot_mask, dones) = zip(*robot.memory)
             # Clear memories of old data
             robot.memory = []
 
@@ -178,34 +193,35 @@ class Runner(object):
             b_values.append(values)
             b_obs.append(observations)
             b_states.append(states)
+            b_shoot_masks.append(shoot_mask)
 
         b_rewards = tf.concat(b_rewards, axis=0)[:, tf.newaxis]
         b_action = tf.concat(b_action, axis=0)
+
         b_neglogp = tf.concat(b_neglogp, axis=0)
         b_values = tf.concat(b_values, axis=0)
         b_obs = tf.concat(b_obs, axis=0)
         b_states = tf.concat(b_states, axis=0)
+        b_shoot_masks = tf.concat(b_shoot_masks, axis=0)
         timer.stop("prep")
 
         timer.start("train")
-        for i in range(3):
-            # Pass data to trainer, managing the model.
-            losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values)
-            # Checkpoint manager will save every x steps
+        # Pass data to trainer, managing the model.
+        losses = trainer.train(b_obs, tf.unstack(b_states, axis=1), b_rewards, b_action, b_neglogp, b_values, b_shoot_masks)
+        # Checkpoint manager will save every x steps
         trainer.checkpoint()
         timer.stop("train")
-
-        print(timer.log_str())
-
         if not WANDBOFF:
             wandb.log({
-                "rewards": b_rewards.numpy().mean(),
-                "loss": losses[0],
-                "actor": losses[1],
-                "critic": losses[2],
-                "entropy": losses[3],
-                "advantage": losses[4],
-                "values": losses[5]
+                "rewards": wandb.Histogram(b_rewards.numpy(), num_bins=256),
+                "loss": losses.loss,
+                "actor": losses.actor,
+                "critic": losses.critic,
+                "ratio": wandb.Histogram(losses.ratio.numpy(),num_bins=256),
+                "ratio_clipped": wandb.Histogram(losses.ratio_clipped.numpy(), num_bins=256),
+                "entropy": losses.entropy,
+                "advantage": losses.advantage,
+                "values": losses.value
             })
         if np.isnan(losses[0].numpy()):
             raise RuntimeError
@@ -226,7 +242,7 @@ def main(steps, envs, render=False, wandboff=False):
         config.max_steps = steps
         config.envs = envs
 
-    runner = Runner(envs)
+    runner = Runner(envs, steps)
     if render:
         # Todo clean up this interaction with Engine and Battle
         from robots.app import App
@@ -248,7 +264,8 @@ def main(steps, envs, render=False, wandboff=False):
             if render:
                 app.step()
         runner.train()
-        print(iteration, timer.stop(), timer.mean_diffs())
+        timer.stop()
+        print(iteration, timer.log_str())
 
 
 if __name__ == "__main__":

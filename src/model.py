@@ -1,10 +1,11 @@
-from importlib_metadata import distribution
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers
-from tensorflow.keras import models
-from distributions import GroupedPd, CategoricalPd, BernoulliPd
+from distributions import GroupedPd, CategoricalPd, MaskedBernoulliPd
 from utils import PROJECT_ROOT
+from collections import namedtuple
+
+Losses = namedtuple('Losses', 'loss,actor,critic,ratio,ratio_clipped,entropy,advantage,value,d_grads,d_grads_actor')
 
 
 class Critic(tf.Module):
@@ -65,29 +66,29 @@ class Model(tf.Module):
     def initial_state(self, batch_size):
         return tf.stack(self.lstm.get_initial_state(batch_size=batch_size, dtype=tf.float32))
 
-    def distribution(self, logits):
-        logits = tf.split(logits, self.action_space, axis=-1) 
+    def distribution(self, logits, shoot_mask):
+        logits = tf.split(logits, self.action_space, axis=-1)
         return GroupedPd([
-            BernoulliPd(logits[0][:, 0]),
+            MaskedBernoulliPd(logits[0][:, 0], shoot_mask),
             CategoricalPd(logits[1]),
             CategoricalPd(logits[2]),
             CategoricalPd(logits[3]),
         ])
 
-    def prob(self, obs, states):
+    def prob(self, obs, states, shoot_mask):
         logits, value, states = self(obs, states)
-        dist = self.distribution(logits)
+        dist = self.distribution(logits, shoot_mask)
         return [prob.numpy() for prob in dist.prob()], [logit.numpy() for logit in dist.logits()], value.numpy()
 
-    def sample(self, obs, states):
+    def sample(self, obs, states, shoot_mask):
         logits, value, states = self(obs, states)
-        dist = self.distribution(logits)
+        dist = self.distribution(logits, shoot_mask)
         actions = dist.sample()
         return actions.numpy(), value.numpy(), dist.neglogp(actions).numpy(), states.numpy()
 
-    def run(self, obs, states):
+    def run(self, obs, states, shoot_mask):
         logits, value, states = self(obs, states)
-        dist = self.distribution(logits)
+        dist = self.distribution(logits, shoot_mask)
         return dist.mode().numpy(), value.numpy(), states.numpy()
 
 
@@ -97,8 +98,8 @@ class Trainer(object):
                  old_model,
                  save_path=f"{PROJECT_ROOT}/ckpts",
                  interval=50,
-                 critic_scale=0.3,
-                 entropy_scale=0.01,
+                 critic_scale=0.5,
+                 entropy_scale=0.007,
                  learning_rate=7e-4,
                  epsilon=0.2) -> None:
         """Class to manage training a model.
@@ -139,7 +140,7 @@ class Trainer(object):
         if save_path:
             print("Saved checkpoint for step {}: {}".format(int(self.ckpt.step), save_path))
 
-    # @tf.function
+    @tf.function
     def train(self,
               observations,
               states,
@@ -147,6 +148,7 @@ class Trainer(object):
               actions,
               neglogp,
               values,
+              shoot_masks,
               norm_advs=True,
               print_grads=False):
         """[summary]
@@ -175,19 +177,13 @@ class Trainer(object):
             advantage = (advantage - tf.reduce_mean(advantage)) / (tf.math.reduce_std(advantage) + 1e-8)
 
         oldlogits, _, _ = self.old_model(observations, states=states)
-        old_neglogp = self.old_model.distribution(oldlogits).neglogp(actions)
+        old_neglogp = self.old_model.distribution(oldlogits, shoot_masks).neglogp(actions)
 
         with tf.GradientTape() as tape:
             logits, vpred, _ = self.model(observations, states=states)
-
-            # Mask out cases when we cant choose to shoot
-            mask = actions[:, 0] == -1
-            logits[:,0] = tf.where(mask, tf.float32.min, logits[:,0])
-            actions[:, 0][mask] = 0
-
-            pd = self.model.distribution(logits)
-            # Actor loss
+            pd = self.model.distribution(logits, shoot_masks)
             neglogp = pd.neglogp(actions)
+            # Actor loss
             # PPO
             ratio = tf.exp(old_neglogp - neglogp)[:, tf.newaxis]
             ratio_clipped = tf.clip_by_value(ratio, 1 - self.epsilon, 1 + self.epsilon)
@@ -205,8 +201,7 @@ class Trainer(object):
             loss = a_loss + (c_loss * self.critic_scale) - (entropy_reg * self.entropy_scale)
 
         # Assign current policy to old policy before update
-        for v1, v2 in zip(self.model.variables, self.old_model.variables):
-            v2.assign(v1)
+        self.copy_to_oldmodel()
 
         training_variables = tape.watched_variables()
         grads = tape.gradient(loss, training_variables)
@@ -225,16 +220,23 @@ class Trainer(object):
             grads, training_variables) if v.name.startswith('actor/')])
 
         d_val = tf.reduce_mean(vpred)
-        return (
+        return Losses(
             loss,
             a_loss,
             c_loss,
+            ratio,
+            ratio_clipped,
             entropy_reg,
             d_adv,
             d_val,
             d_grads,
             d_grads_actor
         )
+    
+    def copy_to_oldmodel(self):
+        # Assign current policy to old policy before update
+        for v1, v2 in zip(self.model.variables, self.old_model.variables):
+            v2.assign(v1)
 
     def restore(self, partial=None):
         status = self.ckpt.restore(self.manager.latest_checkpoint)

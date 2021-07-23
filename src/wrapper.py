@@ -62,4 +62,4 @@ class Dummy(Robot):
         except Exception:
             print("Failed assigning actions", self, turn, shoot)
             raise
-        return action
+        return shoot, turn, move, turret

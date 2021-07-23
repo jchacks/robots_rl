@@ -29,27 +29,27 @@ class Timer(object):
         self.splits = {}
         self.diffs = defaultdict(lambda: deque(maxlen=maxlen))
         self.times_called = defaultdict(int)
-
-    @contextmanager
-    def ctx(self, name="root"):
-        self.split(name)
-        yield
-        self.add_diff(name)
+        self.order = {}
+        self.hier = []
 
     def start(self, name="root"):
-        self.splits[name] = time.time()
+        self.hier.append(name)
+        self.order[tuple(self.hier)] = None
+        self.splits[tuple(self.hier)] = time.time()
 
-    def diff(self, name="root"):
-        return time.time() - self.splits[name]
+    def stop(self, remove="root"):
+        if remove != self.hier[-1]:
+            raise RuntimeError("Cannot remove unstarted timer.")
 
-    def stop(self, name="root"):
+        name = tuple(self.hier)
         self.times_called[name] += 1
-        diff = self.diff(name)
+        diff = time.time() - self.splits[name]
         self.diffs[name].append(diff)
         del self.splits[name]
+        self.hier.pop()
         return diff
 
-    def mean_diffs(self, name="root"):
+    def mean_diffs(self, name):
         diffs = self.diffs.get(name, None)
         if diffs is None:
             raise KeyError(f"Key '{name}' not found.")
@@ -58,7 +58,7 @@ class Timer(object):
         return np.mean(diffs) * num
 
     def log_str(self):
-        return '\n'.join([f"{k}: {self.mean_diffs(k)}" for k in self.diffs.keys()]) + '\n'
+        return '\n'.join([f"{'-'.join(k)}: {self.mean_diffs(k)}" for k in self.order.keys()]) + '\n'
 
 
 class TqdmLoggingHandler(logging.Handler):

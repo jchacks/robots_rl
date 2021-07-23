@@ -224,7 +224,7 @@ class Runner(object):
         trainer.checkpoint()
         if not WANDBOFF:
             wandb.log({
-                "rewards": wandb.Histogram(m_rewards.numpy(), num_bins=256),
+                "rewards": wandb.Histogram(m_rewards, num_bins=256),
                 "loss": losses.loss,
                 "actor": losses.actor,
                 "critic": losses.critic,

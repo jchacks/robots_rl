@@ -125,8 +125,8 @@ class Trainer(object):
         old_model,
         save_path=f"{PROJECT_ROOT}/ckpts",
         interval=100,
-        critic_scale=0.5,
-        entropy_scale=0.007,
+        critic_scale=0.8,
+        entropy_scale=0.05,
         learning_rate=7e-4,
         epsilon=0.2,
     ) -> None:

@@ -38,7 +38,7 @@ def parse_args():
         "-s",
         "--steps",
         type=int,
-        default=40,
+        default=200,
         help="Number of steps to use for training.",
     )
     return parser.parse_args()
@@ -76,11 +76,14 @@ def make_eng():
 
 class Runner(object):
     def __init__(self, nenvs, steps) -> None:
+        # Callback to render during training
+        self.on_step = None
+        
         self.train_iteration = 0
         self.nenvs = nenvs
         self.steps = steps
-        self.gamma = 0.97  # discounted factor
-
+        self.gamma = 0.99  # discounted factor
+        
         self.engines = [make_eng() for _ in range(nenvs)]
         self.robots = []
         self.robot_map = {}
@@ -209,7 +212,8 @@ class Runner(object):
             m_states[i] = states
             m_shoot_masks[i] = shoot_masks
             m_dones[i] = dones
-            self.on_step()
+            if self.on_step is not None:
+                self.on_step()
 
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
@@ -238,7 +242,7 @@ class Runner(object):
         # Assign current policy to old policy before update
         trainer.copy_to_oldmodel()
 
-        for _ in range(4):
+        for _ in range(10):
             order = np.arange(total)
             np.random.shuffle(order)
             for i in range(num_batches):
@@ -303,9 +307,7 @@ def main(steps, envs, render=False, wandboff=False):
         eng = runner.engines[0]
         battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
         app.child = battle
-        runner.app = app
-
-    runner.on_step = app.step
+        runner.on_step = app.step
 
     for iteration in range(1000000):
         timer.start()

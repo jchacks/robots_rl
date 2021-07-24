@@ -9,7 +9,7 @@ import tensorflow as tf
 import tqdm
 from robots.robot.utils import *
 
-PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + '/../')
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 # Action selection lists
 TURNING = [Turn.NONE, Turn.LEFT, Turn.RIGHT]
@@ -20,7 +20,9 @@ def cast(dtype):
     def wrap(function):
         def inner(*args, **kwargs):
             return tf.cast(function(*args, **kwargs), dtype)
+
         return inner
+
     return wrap
 
 
@@ -58,7 +60,12 @@ class Timer(object):
         return np.mean(diffs) * num
 
     def log_str(self):
-        return '\n'.join([f"{'-'.join(k)}: {self.mean_diffs(k)}" for k in self.order.keys()]) + '\n'
+        return (
+            "\n".join(
+                [f"{'-'.join(k)}: {self.mean_diffs(k)}" for k in self.order.keys()]
+            )
+            + "\n"
+        )
 
 
 class TqdmLoggingHandler(logging.Handler):

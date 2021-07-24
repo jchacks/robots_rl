@@ -16,8 +16,15 @@ from wrapper import AITrainingBattle, Dummy
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-v', "--verbose", action='store_true', help="Print debugging information.")
-    parser.add_argument('-s', "--sample", action='store_true', help="Using the probability sampling instead of argmax.")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Print debugging information."
+    )
+    parser.add_argument(
+        "-s",
+        "--sample",
+        action="store_true",
+        help="Using the probability sampling instead of argmax.",
+    )
     return parser.parse_args()
 
 
@@ -26,6 +33,7 @@ model = Model(ACTION_DIMS)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (600, 600)
 app = App(size=size)
+
 
 class TestingEngine(Engine):
     def init_robotdata(self, robot):
@@ -44,7 +52,7 @@ eng.GUN_HEAT_ENABLED = True
 eng.BULLET_COLLISIONS_ENABLED = False
 
 battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
-battle.bw.overlay.bars.append(('value', Colors.B, Colors.R))
+battle.bw.overlay.bars.append(("value", Colors.B, Colors.R))
 app.child = battle
 # Use the eng create by battle
 
@@ -72,14 +80,14 @@ def get_obs():
 
 @cast(tf.float32)
 def get_states():
-    """Retrieves states with correct dims that were previously saved as an 
+    """Retrieves states with correct dims that were previously saved as an
     attribute on the engine instances."""
     return tf.stack([robot_map[i].lstmstate for i in range(len(robot_map))], axis=1)
+
 
 @cast(tf.bool)
 def get_shoot_mask():
     return tf.stack([r.turret_heat > 0 for r in eng.robots])
-
 
 
 def main(debug=False, sample=False):
@@ -94,7 +102,7 @@ def main(debug=False, sample=False):
             robot_map[i] = robot
             inv_robot_map[robot] = i
             robot.memory = []
-            
+
         _states = model.initial_state(len(robot_map))
         print("Running test")
         while not eng.is_finished():
@@ -104,7 +112,9 @@ def main(debug=False, sample=False):
             obs = get_obs()
             states = tf.unstack(tf.cast(_states, tf.float32))
             if sample:
-                actions, value, _, new_states = model.sample(obs, states, get_shoot_mask())
+                actions, value, _, new_states = model.sample(
+                    obs, states, get_shoot_mask()
+                )
             else:
                 actions, value, new_states = model.run(obs, states, get_shoot_mask())
 
@@ -116,8 +126,16 @@ def main(debug=False, sample=False):
 
             if debug:
                 for i, r in enumerate(robots):
-                    print(r.base_color, r.position, r.moving, r.base_turning,
-                          r.turret_turning, r.should_fire, actions[i], value[i])
+                    print(
+                        r.base_color,
+                        r.position,
+                        r.moving,
+                        r.base_turning,
+                        r.turret_turning,
+                        r.should_fire,
+                        actions[i],
+                        value[i],
+                    )
             eng.step()
 
 

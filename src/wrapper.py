@@ -13,38 +13,51 @@ class AITrainingBattle(Battle):
 class Dummy(Robot):
     def init(self, size=None, **kwargs):
         self.battle_size = size
-        self.value = .0  # Used for displaying predicted value
+        self.value = 0.0  # Used for displaying predicted value
         self.opponents = [r for r in kwargs["all_robots"] if r != self]
 
     def run(self):
         pass
 
-    def get_state(self,):
+    def get_state(
+        self,
+    ):
         s = np.array(self.battle_size)
-        center = s//2
-        direction = np.sin(self.bearing * np.pi / 180), np.cos(self.bearing * np.pi / 180)
-        turret = np.sin(self.turret_bearing * np.pi / 180), np.cos(self.turret_bearing * np.pi / 180)
-        return np.concatenate([
-            [(self.energy/50) - 1, self.turret_heat/30, self.velocity/8],
-            direction,
-            turret,
-            (self.position/center) - 1,
-            (self.position/s),
-        ], axis=0)
+        center = s // 2
+        direction = np.sin(self.bearing * np.pi / 180), np.cos(
+            self.bearing * np.pi / 180
+        )
+        turret = np.sin(self.turret_bearing * np.pi / 180), np.cos(
+            self.turret_bearing * np.pi / 180
+        )
+        return np.concatenate(
+            [
+                [(self.energy / 50) - 1, self.turret_heat / 30, self.velocity / 8],
+                direction,
+                turret,
+                (self.position / center) - 1,
+                (self.position / s),
+            ],
+            axis=0,
+        )
 
     def get_obs(self):
         oppo_data = []
         size = np.array(self.battle_size)
         for r in self.opponents:
             attrs = r.get_visible_attrs()
-            v = self.position - attrs['position']
-            d = np.sqrt(np.sum(v**2))
-            oppo_data.append(np.array([
-                (attrs['energy']/50) - 1,
-                d/100,
-                *(v/d),
-                attrs['velocity']/8
-            ]))
+            v = self.position - attrs["position"]
+            d = np.sqrt(np.sum(v ** 2))
+            oppo_data.append(
+                np.array(
+                    [
+                        (attrs["energy"] / 50) - 1,
+                        d / 100,
+                        *(v / d),
+                        attrs["velocity"] / 8,
+                    ]
+                )
+            )
 
         return np.concatenate([self.get_state()] + oppo_data)
 

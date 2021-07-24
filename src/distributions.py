@@ -66,7 +66,7 @@ class Pd(object):
         :param x: (str) the labels of each index
         :return: ([float]) The log likelihood of the distribution
         """
-        return - self.neglogp(x)
+        return -self.neglogp(x)
 
 
 class CategoricalPd(Pd):
@@ -89,8 +89,8 @@ class CategoricalPd(Pd):
         #       the implementation does not allow second-order derivatives...
         one_hot_actions = tf.one_hot(x, self.logits.get_shape().as_list()[-1])
         return tf.nn.softmax_cross_entropy_with_logits(
-            logits=self.logits,
-            labels=tf.stop_gradient(one_hot_actions))
+            logits=self.logits, labels=tf.stop_gradient(one_hot_actions)
+        )
 
     def kl(self, other):
         a_0 = self.logits - tf.reduce_max(self.logits, axis=-1, keepdims=True)
@@ -100,14 +100,18 @@ class CategoricalPd(Pd):
         z_0 = tf.reduce_sum(exp_a_0, axis=-1, keepdims=True)
         z_1 = tf.reduce_sum(exp_a_1, axis=-1, keepdims=True)
         p_0 = exp_a_0 / z_0
-        return tf.reduce_sum(p_0 * (a_0 - tf.math.log(z_0) - a_1 + tf.math.log(z_1)), axis=-1)
+        return tf.reduce_sum(
+            p_0 * (a_0 - tf.math.log(z_0) - a_1 + tf.math.log(z_1)), axis=-1
+        )
 
     def entropy(self):
         a_0 = self.logits - tf.reduce_max(self.logits, axis=-1, keepdims=True)
         exp_a_0 = tf.exp(a_0)
         z_0 = tf.reduce_sum(exp_a_0, axis=-1, keepdims=True)
         p_0 = exp_a_0 / z_0
-        return tf.reduce_mean(tf.reduce_sum(p_0 * (tf.math.log(z_0) - a_0), axis=-1), axis=-1)
+        return tf.reduce_mean(
+            tf.reduce_sum(p_0 * (tf.math.log(z_0) - a_0), axis=-1), axis=-1
+        )
 
     def sample(self):
         # Gumbel-max trick to sample
@@ -146,10 +150,14 @@ class MultiCategoricalPd(Pd):
         return tf.stack([p.mode() for p in self.categoricals], axis=-1)
 
     def neglogp(self, x):
-        return tf.add_n([p.neglogp(px) for p, px in zip(self.categoricals, tf.unstack(x, axis=-1))])
+        return tf.add_n(
+            [p.neglogp(px) for p, px in zip(self.categoricals, tf.unstack(x, axis=-1))]
+        )
 
     def kl(self, other):
-        return tf.add_n([p.kl(q) for p, q in zip(self.categoricals, other.categoricals)])
+        return tf.add_n(
+            [p.kl(q) for p, q in zip(self.categoricals, other.categoricals)]
+        )
 
     def entropy(self):
         return tf.add_n([p.entropy() for p in self.categoricals])
@@ -180,13 +188,26 @@ class BernoulliPd(Pd):
         return self.ps
 
     def neglogp(self, x):
-        return tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=tf.cast(x, tf.float32))
+        return tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=self.logits, labels=tf.cast(x, tf.float32)
+        )
 
     def kl(self, other):
-        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=other.logits, labels=self.ps), axis=-1) - tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps), axis=-1)
+        return tf.reduce_sum(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=other.logits, labels=self.ps
+            ),
+            axis=-1,
+        ) - tf.reduce_sum(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps),
+            axis=-1,
+        )
 
     def entropy(self):
-        return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps), axis=-1)
+        return tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps),
+            axis=-1,
+        )
 
     def sample(self):
         u = tf.random.uniform(tf.shape(self.ps))
@@ -210,19 +231,36 @@ class MaskedBernoulliPd(Pd):
         return self.ps
 
     def neglogp(self, x):
-        return tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=tf.cast(x, tf.float32))
+        return tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=self.logits, labels=tf.cast(x, tf.float32)
+        )
 
     def kl(self, other):
-        return tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=other.logits, labels=self.ps), axis=-1) - tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps), axis=-1)
+        return tf.reduce_sum(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=other.logits, labels=self.ps
+            ),
+            axis=-1,
+        ) - tf.reduce_sum(
+            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps),
+            axis=-1,
+        )
 
     def masked_kl(self):
         return
 
     def nonmasked_entropy(self):
-        return tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps)
+        return tf.nn.sigmoid_cross_entropy_with_logits(
+            logits=self.logits, labels=self.ps
+        )
 
     def entropy(self):
-        return tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits[~self.mask], labels=self.ps[~self.mask]), axis=-1)
+        return tf.reduce_mean(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=self.logits[~self.mask], labels=self.ps[~self.mask]
+            ),
+            axis=-1,
+        )
 
     def sample(self):
         u = tf.random.uniform(tf.shape(self.ps))
@@ -238,10 +276,14 @@ class GroupedPd(Pd):
         return tf.stack([p.mode() for p in self.distributions], axis=-1)
 
     def neglogp(self, x):
-        return tf.add_n([p.neglogp(px) for p, px in zip(self.distributions, tf.unstack(x, axis=-1))])
+        return tf.add_n(
+            [p.neglogp(px) for p, px in zip(self.distributions, tf.unstack(x, axis=-1))]
+        )
 
     def kl(self, other):
-        return tf.add_n([p.kl(q) for p, q in zip(self.distributions, other.distributions)])
+        return tf.add_n(
+            [p.kl(q) for p, q in zip(self.distributions, other.distributions)]
+        )
 
     def entropy(self):
         return tf.reduce_sum([p.entropy() for p in self.distributions])

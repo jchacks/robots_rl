@@ -20,18 +20,34 @@ timer = Timer()
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-v', "--verbose", action='store_true', help="Print debugging information.")
-    parser.add_argument("--wandboff", action='store_true', help="Turn off W&B logging.")
-    parser.add_argument('-r', "--render", action='store_true', help="Render battles during training.")
-    parser.add_argument('-n', "--envs", type=int, default=200, help="Number of envs to use for training.")
-    parser.add_argument('-s', "--steps", type=int, default=40, help="Number of steps to use for training.")
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Print debugging information."
+    )
+    parser.add_argument("--wandboff", action="store_true", help="Turn off W&B logging.")
+    parser.add_argument(
+        "-r", "--render", action="store_true", help="Render battles during training."
+    )
+    parser.add_argument(
+        "-n",
+        "--envs",
+        type=int,
+        default=200,
+        help="Number of envs to use for training.",
+    )
+    parser.add_argument(
+        "-s",
+        "--steps",
+        type=int,
+        default=40,
+        help="Number of steps to use for training.",
+    )
     return parser.parse_args()
 
 
 ACTION_DIMS = (1, 3, 3, 3)
 model = Model(ACTION_DIMS)
 model = Model(ACTION_DIMS)
-old_model = Model(ACTION_DIMS, 'old_model')
+old_model = Model(ACTION_DIMS, "old_model")
 trainer = Trainer(model, old_model)
 trainer.restore()
 trainer.copy_to_oldmodel()
@@ -87,7 +103,7 @@ class Runner(object):
     def get_shoot_mask(self):
         return tf.stack([r.turret_heat > 0 for r in self.robots])
 
-    def init_states(self,):
+    def init_states(self):
         self.states = model.initial_state(len(self.robots))
 
     def run(self):
@@ -100,7 +116,9 @@ class Runner(object):
         observations = self.get_obs()
         states = tf.unstack(tf.cast(self.states, tf.float32))
         shoot_mask = self.get_shoot_mask()
-        actions, values, neglogps, new_states = map(operator.methodcaller('numpy'), model.sample(observations, states, shoot_mask))
+        actions, values, neglogps, new_states = model.sample(
+            observations, states, shoot_mask
+        )
         timer.stop("tfstep")
 
         # Assign actions and records the next states
@@ -122,12 +140,12 @@ class Runner(object):
 
         for idx, robot in enumerate(self.robots):
             done = not robot.alive
-            reward = (robot.energy-robot.previous_energy-1)/100
+            reward = (robot.energy - robot.previous_energy - 1) / 100
             if done:
                 # Zero out the index for the done robot
                 new_states[:, idx] = 0
                 if robot.energy > 0:
-                    reward += 1 + robot.energy/100
+                    reward += 1 + robot.energy / 100
                 else:
                     reward -= 1
 
@@ -145,7 +163,7 @@ class Runner(object):
             observations,
             self.states,
             shoot_mask,
-            dones
+            dones,
         )
         self.states = new_states
 
@@ -162,14 +180,15 @@ class Runner(object):
         return memory
 
     def train(self):
-        m_rewards = np.zeros((self.steps, self.nenvs*2), dtype=np.float32)
-        m_actions = np.zeros((self.steps, self.nenvs*2, len(ACTION_DIMS)), dtype=np.uint8)
-        m_values = np.zeros((self.steps, self.nenvs*2), dtype=np.float32)
-        m_neglogps = np.zeros((self.steps, self.nenvs*2), dtype=np.float32)
-        m_observations = np.zeros((self.steps, self.nenvs*2, 16), dtype=np.float32)
-        m_states = np.zeros((self.steps, 2, self.nenvs*2, 512), dtype=np.float32)
-        m_shoot_masks = np.zeros((self.steps, self.nenvs*2), dtype=np.bool)
-        m_dones = np.zeros((self.steps, self.nenvs*2), dtype=np.bool)
+        n_robots = self.nenvs * 2
+        m_rewards = np.zeros((self.steps, n_robots), dtype=np.float32)
+        m_actions = np.zeros((self.steps, n_robots, len(ACTION_DIMS)), dtype=np.uint8)
+        m_values = np.zeros((self.steps, n_robots), dtype=np.float32)
+        m_neglogps = np.zeros((self.steps, n_robots), dtype=np.float32)
+        m_observations = np.zeros((self.steps, n_robots, 16), dtype=np.float32)
+        m_states = np.zeros((self.steps, 2, n_robots, 512), dtype=np.float32)
+        m_shoot_masks = np.zeros((self.steps, n_robots), dtype=np.bool)
+        m_dones = np.zeros((self.steps, n_robots), dtype=np.bool)
 
         for i in range(self.steps):
             (
@@ -180,7 +199,7 @@ class Runner(object):
                 observations,
                 states,
                 shoot_masks,
-                dones
+                dones,
             ) = self.run()
             m_actions[i] = actions
             m_values[i] = values[:, 0]
@@ -198,6 +217,8 @@ class Runner(object):
         _, last_values, _ = model.run(observations, states, shoot_mask)
         if self.train_iteration == 0:
             _ = old_model.run(observations, states, shoot_mask)
+        p, l, v = model.prob(observations, states, shoot_mask)
+        print([p[0:4] for p in p], [l[0:4] for l in l], v[0:4])
 
         disc_reward = discounted(m_rewards, m_dones, last_values[:, 0], self.gamma)
 
@@ -210,30 +231,48 @@ class Runner(object):
         m_values = m_values.reshape(-1)
         m_shoot_masks = m_shoot_masks.reshape(-1)
 
-        # Pass data to trainer, managing the model.
-        losses = trainer.train(
-            m_observations,
-            tf.unstack(m_states, axis=1),
-            disc_reward,
-            m_actions,
-            m_neglogps,
-            m_values,
-            m_shoot_masks)
+        num_batches = 8
+        total = self.steps * n_robots
+        batch_size = (total // num_batches) + 1
+
+        # Assign current policy to old policy before update
+        trainer.copy_to_oldmodel()
+
+        for _ in range(4):
+            order = np.arange(total)
+            np.random.shuffle(order)
+            for i in range(num_batches):
+                slc = slice(i * batch_size, (i + 1) * batch_size)
+                # Pass data to trainer, managing the model.
+                losses = trainer.train(
+                    m_observations[order][slc],
+                    tf.unstack(m_states[order][slc], axis=1),
+                    disc_reward[order][slc],
+                    m_actions[order][slc],
+                    m_neglogps[order][slc],
+                    m_values[order][slc],
+                    m_shoot_masks[order][slc],
+                )
 
         # Checkpoint manager will save every x steps
         trainer.checkpoint()
         if not WANDBOFF:
-            wandb.log({
-                "rewards": wandb.Histogram(m_rewards, num_bins=256),
-                "loss": losses.loss,
-                "actor": losses.actor,
-                "critic": losses.critic,
-                "ratio": wandb.Histogram(losses.ratio.numpy(), num_bins=256),
-                "ratio_clipped": wandb.Histogram(losses.ratio_clipped.numpy(), num_bins=256),
-                "entropy": losses.entropy,
-                "advantage": losses.advantage,
-                "values": losses.value
-            })
+            wandb.log(
+                {
+                    "rewards": wandb.Histogram(m_rewards, num_bins=256),
+                    "mean_reward": m_rewards.mean(),
+                    "loss": losses.loss,
+                    "actor": losses.actor,
+                    "critic": losses.critic,
+                    "ratio": wandb.Histogram(losses.ratio.numpy(), num_bins=256),
+                    "ratio_clipped": wandb.Histogram(
+                        losses.ratio_clipped.numpy(), num_bins=256
+                    ),
+                    "entropy": losses.entropy,
+                    "advantage": losses.advantage,
+                    "values": losses.value,
+                }
+            )
         if np.isnan(losses[0].numpy()):
             raise RuntimeError
         self.train_iteration += 1
@@ -244,7 +283,7 @@ def main(steps, envs, render=False, wandboff=False):
     WANDBOFF = wandboff
     # Initate WandB before running
     if not WANDBOFF:
-        wandb.init(project='robots_rl', entity='jchacks')
+        wandb.init(project="robots_rl", entity="jchacks")
         config = wandb.config
         config.critic_scale = trainer.critic_scale
         config.entropy_scale = trainer.entropy_scale
@@ -279,7 +318,4 @@ def main(steps, envs, render=False, wandboff=False):
 
 if __name__ == "__main__":
     args = parse_args()
-    main(steps=args.steps,
-         envs=args.envs,
-         wandboff=args.wandboff,
-         render=args.render)
+    main(steps=args.steps, envs=args.envs, wandboff=args.wandboff, render=args.render)

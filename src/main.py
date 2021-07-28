@@ -44,7 +44,6 @@ def parse_args():
 
 
 
-
 ACTION_DIMS = (1, 3*3*3)
 model = Model(ACTION_DIMS)
 model = Model(ACTION_DIMS)
@@ -189,7 +188,7 @@ class Runner(object):
         m_actions = np.zeros((self.steps, n_robots, len(ACTION_DIMS)), dtype=np.uint8)
         m_values = np.zeros((self.steps, n_robots), dtype=np.float32)
         m_neglogps = np.zeros((self.steps, n_robots), dtype=np.float32)
-        m_observations = np.zeros((self.steps, n_robots, 16), dtype=np.float32)
+        m_observations = np.zeros((self.steps, n_robots, 12), dtype=np.float32)
         m_states = np.zeros((self.steps, 2, n_robots, 512), dtype=np.float32)
         m_shoot_masks = np.zeros((self.steps, n_robots), dtype=np.bool)
         m_dones = np.zeros((self.steps, n_robots), dtype=np.bool)
@@ -227,14 +226,15 @@ class Runner(object):
 
         disc_reward = discounted(m_rewards, m_dones, last_values[:, 0], self.gamma)
 
+        n_records = n_robots * self.steps
         # change shape and reshape
-        m_observations = m_observations.reshape(-1, 16)
-        disc_reward = disc_reward.reshape(-1)
-        m_states = m_states.transpose(0, 2, 1, 3).reshape(-1, 2, 512)
-        m_actions = m_actions.reshape(-1, 4)
-        m_neglogps = m_neglogps.reshape(-1)
-        m_values = m_values.reshape(-1)
-        m_shoot_masks = m_shoot_masks.reshape(-1)
+        m_observations = m_observations.reshape(n_records, 12)
+        disc_reward = disc_reward.reshape(n_records)
+        m_states = m_states.transpose(0, 2, 1, 3).reshape(n_records, 2, 512)
+        m_actions = m_actions.reshape(n_records, -1)
+        m_neglogps = m_neglogps.reshape(n_records)
+        m_values = m_values.reshape(n_records)
+        m_shoot_masks = m_shoot_masks.reshape(n_records)
 
         num_batches = 8
         total = self.steps * n_robots

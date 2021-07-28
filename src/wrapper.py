@@ -10,14 +10,21 @@ class AITrainingBattle(Battle):
         pass
 
 
+def get_rot_mat(rads):
+    c, s = np.cos(rads), np.sin(rads)
+    return np.array(((c, -s), (s, c)))
+
 
 def get_action(argmax, dims):
     "logit locations -> actions"
     return np.unravel_index(argmax, dims)
 
+
 def get_argmax(actions, dims):
     "actions -> logit locations"
     return np.ravel_multi_index(actions, dims)
+
+
 class Dummy(Robot):
     def init(self, size=None, **kwargs):
         self.battle_size = size
@@ -31,49 +38,49 @@ class Dummy(Robot):
     def get_state(self):
         s = np.array(self.battle_size)
         center = s // 2
-        direction = (
-            np.sin(self.bearing * np.pi / 180),
-            np.cos(self.bearing * np.pi / 180),
+        center = (self.position - center)
+        center = center / np.sqrt(np.sum(center**2))
+        R = get_rot_mat(-self.base_rotation)
+        turret = np.array(
+            [
+                np.cos(self.turret_rotation),
+                np.sin(self.turret_rotation),
+            ]
         )
-        turret = (
-            np.sin(self.turret_bearing * np.pi / 180),
-            np.cos(self.turret_bearing * np.pi / 180),
-        )
+        
         return np.concatenate(
             [
                 [(self.energy / 50) - 1, self.turret_heat / 30, self.velocity / 8],
-                direction,
-                turret,
-                (self.position / center) - 1,
-                (self.position / s),
+                R @ turret,
+                R @ center,
             ],
             axis=0,
         )
 
     def get_obs(self):
         oppo_data = []
-        size = np.array(self.battle_size)
+        R = get_rot_mat(-self.base_rotation)
         for r in self.opponents:
             attrs = r.get_visible_attrs()
-            v = self.position - attrs["position"]
-            d = np.sqrt(np.sum(v ** 2))
+            direction = self.position - attrs["position"]
+            distance = np.sqrt(np.sum(direction ** 2))
+            direction = direction/distance
             oppo_data.append(
                 np.array(
                     [
                         (attrs["energy"] / 50) - 1,
-                        d / 100,
-                        *(v / d),
+                        np.log(distance),
+                        *(R @ direction),
                         attrs["velocity"] / 8,
                     ]
                 )
             )
-
         return np.concatenate([self.get_state()] + oppo_data)
 
     def assign_actions(self, action):
         # Apply actions
         shoot, other = action
-        turn, move, turret = get_action(other,(3,3,3))
+        turn, move, turret = get_action(other, (3, 3, 3))
 
         if self.turret_heat > 0:
             shoot = 0
@@ -86,4 +93,4 @@ class Dummy(Robot):
         except Exception:
             print("Failed assigning actions", self, turn, shoot)
             raise
-        return shoot, get_argmax((turn, move, turret), (3,3,3))
+        return shoot, get_argmax((turn, move, turret), (3, 3, 3))

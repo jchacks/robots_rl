@@ -42,14 +42,14 @@ class Actor(tf.Module):
         self.num_actions = np.sum(action_space)
         self.d1 = layers.Dense(512, activation="relu")
         self.d2 = layers.Dense(256, activation="relu")
-        # self.d3 = layers.Dense(256, activation='relu')
+        self.d3 = layers.Dense(256, activation='relu')
         self.o = layers.Dense(self.num_actions)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
         x = self.d2(x)
-        # x = self.d3(x)
+        x = self.d3(x)
         return self.o(x)
 
 
@@ -62,8 +62,8 @@ class Model(tf.Module):
             units=512,
         )
         self.s1 = layers.Dense(512, activation="relu")
-        # self.d1 = layers.Dense(1024, activation='relu')
-        # self.d2 = layers.Dense(1024, activation='relu')
+        self.d1 = layers.Dense(1024, activation='relu')
+        self.d2 = layers.Dense(1024, activation='relu')
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
@@ -73,8 +73,8 @@ class Model(tf.Module):
         latent, states = self.lstm(pre, states=states)
         obs = self.s1(obs)  # Scaling layer
         latent = tf.concat([latent, obs], axis=-1)
-        # latent = self.d1(latent)
-        # latent = self.d2(latent)
+        latent = self.d1(latent)
+        latent = self.d2(latent)
         return self.actor(latent), self.critic(latent), tf.stack(states)
 
     def initial_state(self, batch_size):
@@ -171,7 +171,7 @@ class Trainer(object):
                 )
             )
 
-    @tf.function
+    # @tf.function
     def train(
         self,
         observations,

@@ -1,5 +1,6 @@
 import argparse
 import time
+import math
 import random
 
 import numpy as np
@@ -28,7 +29,7 @@ def parse_args():
     return parser.parse_args()
 
 
-ACTION_DIMS = (1, 3, 3, 3)
+ACTION_DIMS = (1, 3 * 3 * 3)
 model = Model(ACTION_DIMS)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (600, 600)
@@ -38,8 +39,8 @@ app = App(size=size)
 class TestingEngine(Engine):
     def init_robotdata(self, robot):
         robot.position = np.random.uniform(np.array(self.size))
-        robot.base_rotation = random.random() * 360
-        robot.turret_rotation = random.random() * 360
+        robot.base_rotation = random.random() * 2 * math.pi
+        robot.turret_rotation = random.random() * 2 * math.pi
         robot.radar_rotation = robot.turret_rotation
         robot.energy = 100
 
@@ -122,7 +123,9 @@ def main(debug=False, sample=False):
             for i, robot in robot_map.items():
                 robot.assign_actions(actions[i])
                 robot.value = (value[i, 0] + 2) / 3
-                robot.norm_value = (value[i, 0]-value.min()) / (value.max() - value.min())
+                robot.norm_value = (value[i, 0] - value.min()) / (
+                    value.max() - value.min()
+                )
 
             _states = new_states
 

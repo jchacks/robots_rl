@@ -12,7 +12,6 @@ import wandb
 from model import Model, Trainer
 from utils import Timer, cast, discounted
 from wrapper import Dummy
-import operator
 
 WANDBOFF = True
 timer = Timer()
@@ -31,20 +30,22 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=200,
+        default=500,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
         "-s",
         "--steps",
         type=int,
-        default=200,
+        default=30,
         help="Number of steps to use for training.",
     )
     return parser.parse_args()
 
 
-ACTION_DIMS = (1, 3, 3, 3)
+
+
+ACTION_DIMS = (1, 3*3*3)
 model = Model(ACTION_DIMS)
 model = Model(ACTION_DIMS)
 old_model = Model(ACTION_DIMS, "old_model")
@@ -82,7 +83,7 @@ class Runner(object):
         self.train_iteration = 0
         self.nenvs = nenvs
         self.steps = steps
-        self.gamma = 0.99  # discounted factor
+        self.gamma = 0.95  # discounted factor
         
         self.engines = [make_eng() for _ in range(nenvs)]
         self.robots = []
@@ -242,21 +243,34 @@ class Runner(object):
         # Assign current policy to old policy before update
         trainer.copy_to_oldmodel()
 
-        for _ in range(10):
-            order = np.arange(total)
-            np.random.shuffle(order)
-            for i in range(num_batches):
-                slc = slice(i * batch_size, (i + 1) * batch_size)
-                # Pass data to trainer, managing the model.
-                losses = trainer.train(
-                    m_observations[order][slc],
-                    tf.unstack(m_states[order][slc], axis=1),
-                    disc_reward[order][slc],
-                    m_actions[order][slc],
-                    m_neglogps[order][slc],
-                    m_values[order][slc],
-                    m_shoot_masks[order][slc],
-                )
+        epochs = False
+        if epochs:
+            for _ in range(10):
+                order = np.arange(total)
+                np.random.shuffle(order)
+                for i in range(num_batches):
+                    slc = slice(i * batch_size, (i + 1) * batch_size)
+                    # Pass data to trainer, managing the model.
+                    losses = trainer.train(
+                        m_observations[order][slc],
+                        tf.unstack(m_states[order][slc], axis=1),
+                        disc_reward[order][slc],
+                        m_actions[order][slc],
+                        m_neglogps[order][slc],
+                        m_values[order][slc],
+                        m_shoot_masks[order][slc],
+                    )
+        else:
+            # Pass data to trainer, managing the model.
+            losses = trainer.train(
+                m_observations,
+                tf.unstack(m_states, axis=1),
+                disc_reward,
+                m_actions,
+                m_neglogps,
+                m_values,
+                m_shoot_masks,
+            )
 
         # Checkpoint manager will save every x steps
         trainer.checkpoint()

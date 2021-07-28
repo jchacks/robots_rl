@@ -88,8 +88,8 @@ class Model(tf.Module):
             [
                 MaskedBernoulliPd(logits[0][:, 0], shoot_mask),
                 CategoricalPd(logits[1]),
-                CategoricalPd(logits[2]),
-                CategoricalPd(logits[3]),
+                # CategoricalPd(logits[2]),
+                # CategoricalPd(logits[3]),
             ]
         )
 
@@ -124,10 +124,10 @@ class Trainer(object):
         model,
         old_model,
         save_path=f"{PROJECT_ROOT}/ckpts",
-        interval=100,
-        critic_scale=0.8,
-        entropy_scale=0.05,
-        learning_rate=7e-4,
+        interval=10,
+        critic_scale=1,
+        entropy_scale=0.01,
+        learning_rate=3e-3,
         epsilon=0.2,
     ) -> None:
         """Class to manage training a model.
@@ -141,8 +141,8 @@ class Trainer(object):
             entropy_scale (float, optional): Scale of entropy in the loss function. Defaults to 0.05.
         """
         self.learning_rate = learning_rate
-        self.optimiser = tf.keras.optimizers.SGD(learning_rate=self.learning_rate)
-        # self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate, epsilon=1e-5)
+        self.optimiser = tf.keras.optimizers.SGD(learning_rate=self.learning_rate, momentum=0.5, nesterov=True)
+        # self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
         self.model = model
         self.old_model = old_model
 

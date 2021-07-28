@@ -10,25 +10,34 @@ class AITrainingBattle(Battle):
         pass
 
 
+
+def get_action(argmax, dims):
+    "logit locations -> actions"
+    return np.unravel_index(argmax, dims)
+
+def get_argmax(actions, dims):
+    "actions -> logit locations"
+    return np.ravel_multi_index(actions, dims)
 class Dummy(Robot):
     def init(self, size=None, **kwargs):
         self.battle_size = size
         self.value = 0.0  # Used for displaying predicted value
+        self.norm_value = 0.0  # Used for displaying predicted value
         self.opponents = [r for r in kwargs["all_robots"] if r != self]
 
     def run(self):
         pass
 
-    def get_state(
-        self,
-    ):
+    def get_state(self):
         s = np.array(self.battle_size)
         center = s // 2
-        direction = np.sin(self.bearing * np.pi / 180), np.cos(
-            self.bearing * np.pi / 180
+        direction = (
+            np.sin(self.bearing * np.pi / 180),
+            np.cos(self.bearing * np.pi / 180),
         )
-        turret = np.sin(self.turret_bearing * np.pi / 180), np.cos(
-            self.turret_bearing * np.pi / 180
+        turret = (
+            np.sin(self.turret_bearing * np.pi / 180),
+            np.cos(self.turret_bearing * np.pi / 180),
         )
         return np.concatenate(
             [
@@ -63,7 +72,9 @@ class Dummy(Robot):
 
     def assign_actions(self, action):
         # Apply actions
-        shoot, turn, move, turret = action
+        shoot, other = action
+        turn, move, turret = get_action(other,(3,3,3))
+
         if self.turret_heat > 0:
             shoot = 0
         try:
@@ -75,4 +86,4 @@ class Dummy(Robot):
         except Exception:
             print("Failed assigning actions", self, turn, shoot)
             raise
-        return shoot, turn, move, turret
+        return shoot, get_argmax((turn, move, turret), (3,3,3))

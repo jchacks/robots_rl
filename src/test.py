@@ -10,7 +10,7 @@ from robots.robot.utils import *
 from robots.ui.utils import Colors
 
 from model import Model, Trainer
-from utils import MOVING, TURNING, cast
+from utils import cast
 from wrapper import AITrainingBattle, Dummy
 
 
@@ -53,6 +53,7 @@ eng.BULLET_COLLISIONS_ENABLED = False
 
 battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
 battle.bw.overlay.bars.append(("value", Colors.B, Colors.R))
+battle.bw.overlay.bars.append(("norm_value", Colors.W, Colors.K))
 app.child = battle
 # Use the eng create by battle
 
@@ -120,7 +121,8 @@ def main(debug=False, sample=False):
 
             for i, robot in robot_map.items():
                 robot.assign_actions(actions[i])
-                robot.value = (value[i, 0] + 1) / 2
+                robot.value = (value[i, 0] + 2) / 3
+                robot.norm_value = (value[i, 0]-value.min()) / (value.max() - value.min())
 
             _states = new_states
 

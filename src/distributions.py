@@ -15,13 +15,6 @@ class Pd(object):
     def __init__(self):
         super(Pd, self).__init__()
 
-    def flatparam(self):
-        """
-        Return the direct probabilities
-        :return: ([float]) the probabilities
-        """
-        raise NotImplementedError
-
     def mode(self):
         """
         Returns the probability
@@ -75,24 +68,25 @@ class CategoricalPd(Pd):
         Probability distributions from categorical input
         :param logits: ([float]) the categorical logits input
         """
-        self.logits = logits
+        self.orig_shape = logits.shape
+        self.logits = tf.reshape(logits, (-1, self.orig_shape[-1]))
         super(CategoricalPd, self).__init__()
 
-    def flatparam(self):
-        return self.logits
-
     def mode(self):
-        return tf.argmax(self.logits, axis=-1)
+        return tf.reshape(tf.argmax(self.logits, axis=-1), self.orig_shape[:-1])
 
     def neglogp(self, x):
-        # Note: we can't use sparse_softmax_cross_entropy_with_logits because
-        #       the implementation does not allow second-order derivatives...
-        one_hot_actions = tf.one_hot(x, self.logits.get_shape().as_list()[-1])
-        return tf.nn.softmax_cross_entropy_with_logits(
-            logits=self.logits, labels=tf.stop_gradient(one_hot_actions)
+        labels = tf.reshape(x, (-1, 1))
+        one_hot_actions = tf.one_hot(labels, self.logits.get_shape().as_list()[-1])
+        return tf.reshape(
+            tf.nn.softmax_cross_entropy_with_logits(
+                logits=self.logits, labels=tf.stop_gradient(one_hot_actions)
+            ),
+            self.orig_shape[:-1],
         )
 
     def kl(self, other):
+        raise NotImplementedError("Implement reshaping!")
         a_0 = self.logits - tf.reduce_max(self.logits, axis=-1, keepdims=True)
         a_1 = other.logits - tf.reduce_max(other.logits, axis=-1, keepdims=True)
         exp_a_0 = tf.exp(a_0)
@@ -117,141 +111,63 @@ class CategoricalPd(Pd):
         # Gumbel-max trick to sample
         # a categorical distribution (see http://amid.fish/humble-gumbel)
         uniform = tf.random.uniform(tf.shape(self.logits), dtype=self.logits.dtype)
-        return tf.argmax(self.logits - tf.math.log(-tf.math.log(uniform)), axis=-1)
+        return tf.reshape(
+            tf.argmax(self.logits - tf.math.log(-tf.math.log(uniform)), axis=-1),
+            self.orig_shape[:-1],
+        )
 
     def prob(self):
-        return tf.nn.softmax(self.logits)
-
-    @classmethod
-    def fromflat(cls, flat):
-        """
-        Create an instance of this from new logits values
-        :param flat: ([float]) the categorical logits input
-        :return: (Pd) the instance from the given categorical input
-        """
-        return cls(flat)
-
-
-class MultiCategoricalPd(Pd):
-    def __init__(self, nvec, flat):
-        """
-        Probability distributions from multicategorical input
-        :param nvec: ([int]) the sizes of the different categorical inputs
-        :param flat: ([float]) the categorical logits input
-        """
-        self.flat = flat
-        self.categoricals = list(map(CategoricalPd, tf.split(flat, nvec, axis=-1)))
-        super(MultiCategoricalPd, self).__init__()
-
-    def flatparam(self):
-        return self.flat
-
-    def mode(self):
-        return tf.stack([p.mode() for p in self.categoricals], axis=-1)
-
-    def neglogp(self, x):
-        return tf.add_n(
-            [p.neglogp(px) for p, px in zip(self.categoricals, tf.unstack(x, axis=-1))]
+        return tf.reshape(
+            tf.nn.softmax(self.logits),
+            self.orig_shape,
         )
-
-    def kl(self, other):
-        return tf.add_n(
-            [p.kl(q) for p, q in zip(self.categoricals, other.categoricals)]
-        )
-
-    def entropy(self):
-        return tf.add_n([p.entropy() for p in self.categoricals])
-
-    def sample(self):
-        return tf.stack([p.sample() for p in self.categoricals], axis=-1)
-
-    def prob(self):
-        return [p.prob() for p in self.categoricals]
-
-    def logits(self):
-        return [p.logits for p in self.categoricals]
-
-
-class BernoulliPd(Pd):
-    def __init__(self, logits):
-        self.logits = logits
-        self.ps = tf.sigmoid(logits)
-
-    @property
-    def mean(self):
-        return self.ps
-
-    def mode(self):
-        return tf.cast(tf.round(self.ps), tf.int64)
-
-    def prob(self):
-        return self.ps
-
-    def neglogp(self, x):
-        return tf.nn.sigmoid_cross_entropy_with_logits(
-            logits=self.logits, labels=tf.cast(x, tf.float32)
-        )
-
-    def kl(self, other):
-        return tf.reduce_sum(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                logits=other.logits, labels=self.ps
-            ),
-            axis=-1,
-        ) - tf.reduce_sum(
-            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps),
-            axis=-1,
-        )
-
-    def entropy(self):
-        return tf.reduce_mean(
-            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps),
-            axis=-1,
-        )
-
-    def sample(self):
-        u = tf.random.uniform(tf.shape(self.ps))
-        return tf.cast(u < self.ps, tf.int64)
 
 
 class MaskedBernoulliPd(Pd):
-    def __init__(self, logits, mask):
-        self.mask = mask
-        self.logits = tf.where(mask, tf.float32.min, logits)
-        self.ps = tf.sigmoid(logits)
+    def __init__(self, logits, mask=None):
+        self.orig_shape = logits.shape
+        self.mask = (
+            mask if mask is not None else tf.zeros(self.orig_shape, dtype=tf.bool)
+        )
+        self.logits = tf.reshape(logits, (-1, self.orig_shape[-1]))
+        self.mask = tf.reshape(mask, (-1, self.orig_shape[-1]))
+        self.logits = tf.where(self.mask, tf.float32.min, self.logits)
+        self.ps = tf.sigmoid(self.logits)
 
     @property
     def mean(self):
-        return self.ps
+        return tf.reshape(self.ps, self.orig_shape)
 
     def mode(self):
-        return tf.cast(tf.round(self.ps), tf.int64)
+        return tf.reshape(tf.cast(tf.round(self.ps), tf.int64), self.orig_shape[:-1])
 
     def prob(self):
-        return self.ps
+        return tf.reshape(self.ps, self.orig_shape)
 
     def neglogp(self, x):
-        return tf.nn.sigmoid_cross_entropy_with_logits(
-            logits=self.logits, labels=tf.cast(x, tf.float32)
+        labels = tf.reshape(tf.cast(x, tf.float32), (-1, self.orig_shape[-1]))
+        return tf.reshape(
+            tf.nn.sigmoid_cross_entropy_with_logits(
+                logits=self.logits, labels=tf.stop_gradient(labels)
+            ),
+            self.orig_shape[:-1],
         )
 
     def kl(self, other):
-        return tf.reduce_sum(
-            tf.nn.sigmoid_cross_entropy_with_logits(
-                logits=other.logits, labels=self.ps
+        return tf.reshape(
+            tf.reduce_sum(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                    logits=other.logits, labels=self.ps
+                ),
+                axis=-1,
+            )
+            - tf.reduce_sum(
+                tf.nn.sigmoid_cross_entropy_with_logits(
+                    logits=self.logits, labels=self.ps
+                ),
+                axis=-1,
             ),
-            axis=-1,
-        ) - tf.reduce_sum(
-            tf.nn.sigmoid_cross_entropy_with_logits(logits=self.logits, labels=self.ps),
-            axis=-1,
-        )
-
-    def masked_kl(self):
-        return
-
-    def nonmasked_entropy(self):
-        return tf.nn.sigmoid_cross_entropy_with_logits(
-            logits=self.logits, labels=self.ps
+            self.orig_shape,
         )
 
     def entropy(self):
@@ -264,7 +180,7 @@ class MaskedBernoulliPd(Pd):
 
     def sample(self):
         u = tf.random.uniform(tf.shape(self.ps))
-        return tf.cast(u < self.ps, tf.int64)
+        return tf.reshape(tf.cast(u < self.ps, tf.int64), self.orig_shape[:-1])
 
 
 class GroupedPd(Pd):

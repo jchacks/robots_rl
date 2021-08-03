@@ -1,11 +1,12 @@
 import tensorflow as tf
 import numpy as np
-from tensorflow.keras import layers
+from tensorflow.keras import layers, initializers
 from distributions import GroupedPd, CategoricalPd, MaskedBernoulliPd
 from utils import PROJECT_ROOT
 from collections import namedtuple
 import operator
 
+layers.LSTMCell
 
 Losses = namedtuple(
     "Losses",
@@ -18,6 +19,83 @@ def map_numpy(func):
         return map(operator.methodcaller("numpy"), func(*args, **kwargs))
 
     return inner
+
+
+class LSTM(tf.keras.layers.Layer):
+    def __init__(self, units, init_scale=1.0, **kwargs):
+        super(LSTM, self).__init__(**kwargs)
+        self.units = int(units)
+        self.kernelx_initializer = initializers.Orthogonal(gain=init_scale)
+        self.kernelh_initializer = initializers.Orthogonal(gain=init_scale)
+        self.bias_initializer = initializers.Zeros()
+
+    def build(self, input_shape):
+        dtype = tf.dtypes.as_dtype(self.dtype)
+        if not (dtype.is_floating or dtype.is_complex):
+            raise TypeError(
+                "Unable to build `LSTM` layer with non-floating point "
+                "dtype %s" % (dtype,)
+            )
+
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = int(input_shape[-1])
+        if last_dim is None:
+            raise ValueError(
+                "The last dimension of the inputs to `LSTM` "
+                "should be defined. Found `None`."
+            )
+
+        self.kernelx = self.add_weight(
+            "kernelx",
+            shape=[last_dim, self.units * 4],
+            initializer=self.kernelx_initializer,
+            dtype=self.dtype,
+            trainable=True,
+        )
+        self.kernelh = self.add_weight(
+            "kernelh",
+            shape=[last_dim, self.units * 4],
+            initializer=self.kernelh_initializer,
+            dtype=self.dtype,
+            trainable=True,
+        )
+        self.bias = self.add_weight(
+            "bias",
+            shape=[
+                self.units * 4,
+            ],
+            initializer=self.bias_initializer,
+            dtype=self.dtype,
+            trainable=True,
+        )
+        self.built = True
+
+    def call(self, inputs, states, masks=None):
+        c, h = tf.unstack(states)
+        masks = 1 - masks if masks is not None else tf.ones(len(inputs))
+        masks = tf.expand_dims(masks, -1)
+        output = []
+
+        for idx in range(inputs.get_shape().as_list()[0]):
+            x,m = inputs[idx], masks[idx]
+            c = c * m
+            h = h * m
+            z = tf.matmul(x, self.kernelx) + tf.matmul(h, self.kernelh)
+            i, f, o, u = tf.split(z, axis=1, num_or_size_splits=4)
+
+            i = tf.nn.sigmoid(i)
+            f = tf.nn.sigmoid(f)
+            o = tf.nn.sigmoid(o)
+            u = tf.tanh(u)
+
+            c = f * c + i * u
+            h = o * tf.tanh(c)
+
+            output.append(h)
+        return tf.stack(output), tf.stack([c, h])
+
+    def get_initial_state(self, batch_size, dtype):
+        return tf.zeros(shape=[2, batch_size, self.units], dtype=dtype)
 
 
 class Critic(tf.Module):
@@ -42,7 +120,7 @@ class Actor(tf.Module):
         self.num_actions = np.sum(action_space)
         self.d1 = layers.Dense(512, activation="relu")
         self.d2 = layers.Dense(256, activation="relu")
-        self.d3 = layers.Dense(256, activation='relu')
+        self.d3 = layers.Dense(256, activation="relu")
         self.o = layers.Dense(self.num_actions)
 
     @tf.Module.with_name_scope
@@ -58,19 +136,18 @@ class Model(tf.Module):
         super().__init__(name=name)
         self.action_space = action_space
         self.p1 = layers.Dense(512, activation="relu")
-        self.lstm = layers.LSTMCell(
-            units=512,
-        )
+        # self.lstm = layers.LSTMCell(units=512)
+        self.lstm = LSTM(units=512)
         self.s1 = layers.Dense(512, activation="relu")
-        self.d1 = layers.Dense(1024, activation='relu')
-        self.d2 = layers.Dense(1024, activation='relu')
+        self.d1 = layers.Dense(1024, activation="relu")
+        self.d2 = layers.Dense(1024, activation="relu")
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
     @tf.Module.with_name_scope
-    def __call__(self, obs, states):
+    def __call__(self, obs, states, masks=None):
         pre = self.p1(obs)
-        latent, states = self.lstm(pre, states=states)
+        latent, states = self.lstm(pre, states, masks)
         obs = self.s1(obs)  # Scaling layer
         latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
@@ -86,7 +163,7 @@ class Model(tf.Module):
         logits = tf.split(logits, self.action_space, axis=-1)
         return GroupedPd(
             [
-                MaskedBernoulliPd(logits[0][:, 0], shoot_mask),
+                MaskedBernoulliPd(logits[0], shoot_mask),
                 CategoricalPd(logits[1]),
                 # CategoricalPd(logits[2]),
                 # CategoricalPd(logits[3]),
@@ -141,7 +218,9 @@ class Trainer(object):
             entropy_scale (float, optional): Scale of entropy in the loss function. Defaults to 0.05.
         """
         self.learning_rate = learning_rate
-        self.optimiser = tf.keras.optimizers.SGD(learning_rate=self.learning_rate, momentum=0.5, nesterov=True)
+        self.optimiser = tf.keras.optimizers.SGD(
+            learning_rate=self.learning_rate, momentum=0.5, nesterov=True
+        )
         # self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
         self.model = model
         self.old_model = old_model
@@ -171,16 +250,17 @@ class Trainer(object):
                 )
             )
 
-    # @tf.function
+    @tf.function
     def train(
         self,
         observations,
         states,
-        rewards,
+        advantage,
+        returns,
         actions,
         neglogp,
-        values,
         shoot_masks,
+        dones,
         norm_advs=True,
         print_grads=False,
     ):
@@ -201,9 +281,12 @@ class Trainer(object):
         """
         print("Tracing train function")
         observations = tf.cast(observations, tf.float32)
-        rewards = tf.cast(rewards, tf.float32)
+        advantage = tf.cast(advantage, tf.float32)
+        returns = tf.cast(returns, tf.float32)
+        dones = tf.cast(dones, tf.float32)
+        # rewards = tf.cast(rewards, tf.float32)
+        # advantage = rewards - values
 
-        advantage = rewards - values
         # Record the mean advs before norm for debugging
         d_adv = tf.reduce_mean(advantage)
         if norm_advs:
@@ -217,11 +300,12 @@ class Trainer(object):
         )
 
         with tf.GradientTape() as tape:
-            logits, vpred, _ = self.model(observations, states=states)
+            logits, vpred, _ = self.model(observations, states=states, masks=dones)
             pd = self.model.distribution(logits, shoot_masks)
             neglogp = pd.neglogp(actions)
             # Actor loss
             # PPO
+            #! e^(-log(pi_old) -- log(pi)) = pi/pi_old
             ratio = tf.exp(old_neglogp - neglogp)
             ratio_clipped = tf.clip_by_value(ratio, 1 - self.epsilon, 1 + self.epsilon)
 
@@ -231,7 +315,8 @@ class Trainer(object):
             a_loss = -tf.reduce_mean(a_losses)
 
             # Value function loss
-            c_losses = (vpred[:, 0] - rewards) ** 2
+            # c_losses = (vpred[:, 0] - rewards) ** 2
+            c_losses = (vpred[:, 0] - returns) ** 2
             c_loss = tf.reduce_mean(c_losses)
 
             entropy_reg = tf.reduce_mean(pd.entropy())

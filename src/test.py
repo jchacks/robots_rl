@@ -111,19 +111,17 @@ def main(debug=False, sample=False):
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
-            obs = get_obs()
+            obs = get_obs()[tf.newaxis]
             states = tf.unstack(tf.cast(_states, tf.float32))
             if sample:
-                actions, value, _, new_states = model.sample(
-                    obs, states, get_shoot_mask()
-                )
+                actions, value, _, new_states = model.sample(obs, states, get_shoot_mask())
             else:
                 actions, value, new_states = model.run(obs, states, get_shoot_mask())
 
             for i, robot in robot_map.items():
-                robot.assign_actions(actions[i])
-                robot.value = (value[i, 0] + 2) / 3
-                robot.norm_value = (value[i, 0] - value.min()) / (
+                robot.assign_actions(actions[0][i])
+                robot.value = (value[0, i, 0] + 2) / 3
+                robot.norm_value = (value[0, i, 0] - value.min()) / (
                     value.max() - value.min()
                 )
 

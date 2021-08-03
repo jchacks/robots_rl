@@ -33,6 +33,9 @@ class Dummy(Robot):
         self.opponents = [r for r in kwargs["all_robots"] if r != self]
 
     def run(self):
+        # Send obs to model
+        # Wait for result
+        # Assign actions
         pass
 
     def get_state(self):

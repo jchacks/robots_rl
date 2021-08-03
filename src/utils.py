@@ -90,10 +90,24 @@ def make_logger():
     return logger
 
 
-def discounted(rewards, dones, last_value, gamma=0.99):
+def discounted(rewards, dones, gamma=0.99):
     discounted = []
-    r = last_value
-    for reward, done in zip(rewards[::-1], dones[::-1]):
+
+    r = rewards[-1]
+    for reward, done in zip(rewards[:-1][::-1], dones[::-1]):
         r = reward + gamma * r * (1.0 - done)
         discounted.append(r)
     return np.stack(discounted[::-1])
+
+
+def get_advantage(rewards, values, masks, gamma=0.99, lmbda=0.95):
+    deltas = rewards[:-1] + (gamma * values[1:] * masks) - values[:-1]
+
+    gae = np.zeros(rewards.shape)
+    ret = np.zeros(rewards.shape)
+    #enumerate(zip(deltas[::-1], values[:-1][::-1], masks[::-1]))
+    for i in reversed(range(len(deltas))):
+        gae[i] = deltas[i] + gamma * lmbda * masks[i] * gae[i + 1]
+        ret[i] = gae[i] + values[i]
+
+    return gae[:-1], ret[:-1]

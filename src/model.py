@@ -10,7 +10,7 @@ layers.LSTMCell
 
 Losses = namedtuple(
     "Losses",
-    "loss,actor,critic,ratio,ratio_clipped,entropy,advantage,value,d_grads,d_grads_actor",
+    "loss,actor,critic,ratio,ratio_clipped,entropy,entropies,advantage,value,d_grads,d_grads_actor",
 )
 
 
@@ -54,7 +54,7 @@ class LSTM(tf.keras.layers.Layer):
         )
         self.kernelh = self.add_weight(
             "kernelh",
-            shape=[last_dim, self.units * 4],
+            shape=[self.units, self.units * 4],
             initializer=self.kernelh_initializer,
             dtype=self.dtype,
             trainable=True,
@@ -77,7 +77,7 @@ class LSTM(tf.keras.layers.Layer):
         output = []
 
         for idx in range(inputs.get_shape().as_list()[0]):
-            x,m = inputs[idx], masks[idx]
+            x, m = inputs[idx], masks[idx]
             c = c * m
             h = h * m
             z = tf.matmul(x, self.kernelx) + tf.matmul(h, self.kernelh)
@@ -101,15 +101,15 @@ class LSTM(tf.keras.layers.Layer):
 class Critic(tf.Module):
     def __init__(self, name="critic") -> None:
         super().__init__(name=name)
-        self.d1 = layers.Dense(512, activation="relu")
-        self.d2 = layers.Dense(512, activation="relu")
-        # self.d3 = layers.Dense(128, activation='relu')
+        self.d1 = layers.Dense(32, activation="elu")
+        # self.d2 = layers.Dense(32, activation="elu")
+        # self.d3 = layers.Dense(128, activation="elu")
         self.o = layers.Dense(1)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
-        x = self.d2(x)
+        # x = self.d2(x)
         # x = self.d3(x)
         return self.o(x)
 
@@ -118,16 +118,16 @@ class Actor(tf.Module):
     def __init__(self, action_space, name="actor"):
         super().__init__(name=name)
         self.num_actions = np.sum(action_space)
-        self.d1 = layers.Dense(512, activation="relu")
-        self.d2 = layers.Dense(256, activation="relu")
-        self.d3 = layers.Dense(256, activation="relu")
+        self.d1 = layers.Dense(128, activation="elu")
+        # self.d2 = layers.Dense(256, activation="elu")
+        # self.d3 = layers.Dense(256, activation="elu")
         self.o = layers.Dense(self.num_actions)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
-        x = self.d2(x)
-        x = self.d3(x)
+        # x = self.d2(x)
+        # x = self.d3(x)
         return self.o(x)
 
 
@@ -135,12 +135,11 @@ class Model(tf.Module):
     def __init__(self, action_space, name="model"):
         super().__init__(name=name)
         self.action_space = action_space
-        self.p1 = layers.Dense(512, activation="relu")
-        # self.lstm = layers.LSTMCell(units=512)
-        self.lstm = LSTM(units=512)
-        self.s1 = layers.Dense(512, activation="relu")
-        self.d1 = layers.Dense(1024, activation="relu")
-        self.d2 = layers.Dense(1024, activation="relu")
+        self.p1 = layers.Dense(64, activation="elu")
+        self.lstm = LSTM(units=128)
+        self.s1 = layers.Dense(128, activation="elu")
+        self.d1 = layers.Dense(256, activation="elu")
+        # self.d2 = layers.Dense(128, activation="elu")
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
@@ -151,7 +150,7 @@ class Model(tf.Module):
         obs = self.s1(obs)  # Scaling layer
         latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
-        latent = self.d2(latent)
+        # latent = self.d2(latent)
         return self.actor(latent), self.critic(latent), tf.stack(states)
 
     def initial_state(self, batch_size):
@@ -165,8 +164,8 @@ class Model(tf.Module):
             [
                 MaskedBernoulliPd(logits[0], shoot_mask),
                 CategoricalPd(logits[1]),
-                # CategoricalPd(logits[2]),
-                # CategoricalPd(logits[3]),
+                CategoricalPd(logits[2]),
+                CategoricalPd(logits[3]),
             ]
         )
 
@@ -202,10 +201,10 @@ class Trainer(object):
         old_model,
         save_path=f"{PROJECT_ROOT}/ckpts",
         interval=10,
-        critic_scale=1,
-        entropy_scale=0.01,
+        critic_scale=0.6,
+        entropy_scale=0.03,
         learning_rate=3e-3,
-        epsilon=0.2,
+        epsilon=0.13,
     ) -> None:
         """Class to manage training a model.
         Contains Optimiser and CheckpointManager.
@@ -319,7 +318,8 @@ class Trainer(object):
             c_losses = (vpred[:, 0] - returns) ** 2
             c_loss = tf.reduce_mean(c_losses)
 
-            entropy_reg = tf.reduce_mean(pd.entropy())
+            entropies = [e * s for e, s in zip(pd.entropy(), [1.2, 1.0, 1.0, 1.0])]
+            entropy_reg = tf.reduce_mean(entropies)
             loss = (
                 a_loss
                 + (c_loss * self.critic_scale)
@@ -355,6 +355,7 @@ class Trainer(object):
             ratio,
             ratio_clipped,
             entropy_reg,
+            entropies,
             d_adv,
             d_val,
             d_grads,

@@ -105,7 +105,6 @@ def get_advantage(rewards, values, masks, gamma=0.99, lmbda=0.95):
 
     gae = np.zeros(rewards.shape)
     ret = np.zeros(rewards.shape)
-    #enumerate(zip(deltas[::-1], values[:-1][::-1], masks[::-1]))
     for i in reversed(range(len(deltas))):
         gae[i] = deltas[i] + gamma * lmbda * masks[i] * gae[i + 1]
         ret[i] = gae[i] + values[i]

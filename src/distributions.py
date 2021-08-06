@@ -202,7 +202,7 @@ class GroupedPd(Pd):
         )
 
     def entropy(self):
-        return tf.reduce_sum([p.entropy() for p in self.distributions])
+        return [p.entropy() for p in self.distributions]
 
     def sample(self):
         return tf.stack([p.sample() for p in self.distributions], axis=-1)

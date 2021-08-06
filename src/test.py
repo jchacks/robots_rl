@@ -29,7 +29,7 @@ def parse_args():
     return parser.parse_args()
 
 
-ACTION_DIMS = (1, 3 * 3 * 3)
+ACTION_DIMS = (1, 3, 3, 3)
 model = Model(ACTION_DIMS)
 robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 size = (600, 600)
@@ -106,21 +106,33 @@ def main(debug=False, sample=False):
             robot.memory = []
 
         _states = model.initial_state(len(robot_map))
+        _prev_actions = tf.zeros(
+            (1, len(robot_map), len(ACTION_DIMS)), dtype=np.uint8
+        )
+
         print("Running test")
         while not eng.is_finished():
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
             obs = get_obs()[tf.newaxis]
+            
+            prev_actions = tf.unstack(_prev_actions, axis=-1)   
+            oha = [tf.one_hot(act, n) for act, n in zip(prev_actions, ACTION_DIMS)]
+            oha = tf.concat(oha, -1)
+            obs = tf.concat([obs, oha], axis=-1)
+
             states = tf.unstack(tf.cast(_states, tf.float32))
             if sample:
-                actions, value, _, new_states = model.sample(obs, states, get_shoot_mask())
+                actions, value, _, new_states = model.sample(
+                    obs, states, get_shoot_mask()
+                )
             else:
                 actions, value, new_states = model.run(obs, states, get_shoot_mask())
 
             for i, robot in robot_map.items():
-                robot.assign_actions(actions[0][i])
-                robot.value = (value[0, i, 0] + 2) / 3
+                robot.assign_actions(actions[0, i])
+                robot.value = (value[0, i, 0] + 8) / 16
                 robot.norm_value = (value[0, i, 0] - value.min()) / (
                     value.max() - value.min()
                 )

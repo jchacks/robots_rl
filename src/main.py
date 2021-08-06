@@ -30,20 +30,20 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=500,
+        default=1000,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
         "-s",
         "--steps",
         type=int,
-        default=30,
+        default=10,
         help="Number of steps to use for training.",
     )
     return parser.parse_args()
 
 
-ACTION_DIMS = (1, 3 * 3 * 3)
+ACTION_DIMS = (1, 3, 3, 3)
 model = Model(ACTION_DIMS)
 model = Model(ACTION_DIMS)
 old_model = Model(ACTION_DIMS, "old_model")
@@ -53,6 +53,24 @@ trainer.copy_to_oldmodel()
 
 
 class TrainingEngine(Engine):
+    def __init__(self):
+        robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
+
+        super().__init__(
+            robots,
+            (600, 600),
+            bullet_collisions_enabled=False,
+            gun_heat_enabled=True,
+            energy_decay_enabled=False,
+            rate=-1,
+        )
+
+    def init(self):
+        super().init(robot_kwargs={"all_robots": self.robots})
+        self.lstm_states = tf.zeros(
+            (2, 2, 128), dtype=tf.float32
+        )  # 2[c,h], 2 robots, 128 hidden
+
     def init_robotdata(self, robot):
         robot.position = np.random.uniform(np.array(self.size))
         robot.base_rotation = random.random() * 360
@@ -60,100 +78,82 @@ class TrainingEngine(Engine):
         robot.radar_rotation = robot.turret_rotation
         robot.energy = random.randint(30, 100)  # Randomize starting hp
 
+    def get_obs(self):
+        return np.stack([robot.get_obs() for robot in self.robots])
 
-def make_eng():
-    robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-    size = (600, 600)
-    eng = TrainingEngine(robots, size)
+    def get_action_mask(self):
+        return np.stack([r.turret_heat > 0 for r in self.robots])
 
-    # Simplify battles
-    eng.ENERGY_DECAY_ENABLED = False
-    eng.GUN_HEAT_ENABLED = True
-    eng.BULLET_COLLISIONS_ENABLED = False
-    return eng
+    def step(self, actions):
+        for robot, action in zip(self.robots, actions):
+            robot.assign_actions(action)
+            robot.prev_action = action
+        
+        timer.start("super_step")
+        super().step()
+        timer.stop("super_step")
+
+        rewards = []
+        for robot in self.robots:
+            reward = (robot.energy - robot.previous_energy) / 100 - 0.1
+            if self.is_finished():
+                if robot.energy > 0:
+                    reward += 5 + robot.energy / 100
+                else:
+                    reward -= 5
+            rewards.append(reward)
+
+        return rewards, self.get_obs(), self.is_finished()
 
 
 class Runner(object):
     def __init__(self, nenvs, steps) -> None:
-        # Callback to render during training
         self.on_step = None
 
         self.train_iteration = 0
         self.nenvs = nenvs
         self.steps = steps
-        self.gamma = 0.99
+        self.gamma = 0.97
         self.lmbda = 0.95  # discounted factor
 
-        self.engines = [make_eng() for _ in range(nenvs)]
-        self.robots = []
-        self.robot_map = {}
-        self.inv_robot_map = {}
-
+        self.engines = [TrainingEngine() for i in range(nenvs)]
         for eng in self.engines:
-            eng.init(robot_kwargs={"all_robots": eng.robots})
-            for robot in eng.robots:
-                idx = len(self.robots)
-                self.robots.append(robot)
-                self.robot_map[idx] = robot
-                self.inv_robot_map[robot] = idx
-                robot.memory = []
-
-    @cast(tf.float32)
-    def get_obs(self):
-        return tf.stack([r.get_obs() for r in self.robots])
-
-    @cast(tf.bool)
-    def get_shoot_mask(self):
-        return tf.stack([r.turret_heat > 0 for r in self.robots])
-
-    def init_states(self):
-        self.states = model.initial_state(len(self.robots))
+            eng.init()
+        self.observations = tf.concat([eng.get_obs() for eng in self.engines], 0)[tf.newaxis]
 
     def run(self):
         timer.start("run")
 
         timer.start("tfstep")
-        observations = self.get_obs()
-        states = tf.unstack(tf.cast(self.states, tf.float32))
-        shoot_mask = self.get_shoot_mask()
+        observations = self.observations
+        states = tf.concat([eng.lstm_states for eng in self.engines], 1)
+        shoot_mask = tf.concat([eng.get_action_mask() for eng in self.engines], 0)
         actions, values, neglogps, new_states = model.sample(
-            observations[tf.newaxis], states, shoot_mask
+            self.observations, states, shoot_mask
         )
         timer.stop("tfstep")
 
-        # Assign actions and records the next states
-        for i, robot in enumerate(self.robots):
-            robot.assign_actions(actions[0][i])
+        _actions = actions.reshape(1000, 2, 4)
+        _new_states = new_states.reshape(2, 1000, 2, 128)
+
+        dones = []
+        rewards = np.zeros((1000,2))
+        self.observations = np.zeros((1000,2,22))
 
         timer.start("step")
         for i, eng in enumerate(self.engines):
-            eng.step()
-            # # If going too long then kill both
-            # if eng.steps >= 500:
-            #     for robot in eng.data:
-            #         robot.energy = 0
-
+            timer.start("eng")
+            reward, obs, done = eng.step(_actions[i])
+            timer.stop("eng")
+            eng.lstm_states = _new_states[:, i]
+            rewards[i] = reward
+            self.observations[i] = obs
+            dones.append(done)
         timer.stop("step")
 
-        dones = []
-        rewards = []
-
-        for idx, robot in enumerate(self.robots):
-            done = not robot.alive
-            reward = (robot.energy - robot.previous_energy - 1) / 100
-            if done:
-                # Zero out the index for the done robot
-                new_states[:, idx] = 0
-                if robot.energy > 0:
-                    reward += 5 + robot.energy / 100
-                else:
-                    reward -= 5
-
-            dones.append(done)
-            rewards.append(reward)
-
         dones = np.array(dones)
-        rewards = np.array(rewards)
+        rewards = np.array(rewards).reshape(1, 2000)
+        self.observations = self.observations.reshape(1, 2000,22)
 
         memory = (
             rewards,
@@ -161,21 +161,15 @@ class Runner(object):
             values,
             neglogps,
             observations,
-            self.states,
+            states,
             shoot_mask,
             dones,
         )
-        self.states = new_states
 
-        # Move this out to train
         for eng in self.engines:
-            # If finished clean up
             if eng.is_finished():
-                # Reset LSTMS states
-                for robot in eng.robots:
-                    self.states[:, self.inv_robot_map[robot]] = 0
-                # Reset the engine
-                eng.init(robot_kwargs={"all_robots": eng.robots})
+                eng.init()
+
         timer.stop("run")
         return memory
 
@@ -186,8 +180,8 @@ class Runner(object):
         m_values = np.zeros((self.steps + 1, n_robots), dtype=np.float32)
         m_dones = np.zeros((self.steps, n_robots), dtype=np.bool)
         m_neglogps = np.zeros((self.steps, n_robots), dtype=np.float32)
-        m_observations = np.zeros((self.steps, n_robots, 12), dtype=np.float32)
-        m_states = np.zeros((self.steps, 2, n_robots, 512), dtype=np.float32)
+        m_observations = np.zeros((self.steps, n_robots, 22), dtype=np.float32)
+        m_states = np.zeros((self.steps, 2, n_robots, 128), dtype=np.float32)
         m_shoot_masks = np.zeros((self.steps, n_robots), dtype=np.bool)
 
         for i in range(self.steps):
@@ -208,21 +202,23 @@ class Runner(object):
             m_observations[i] = observations
             m_states[i] = states
             m_shoot_masks[i] = shoot_masks
-            m_dones[i] = dones
+            m_dones[i] = np.repeat(dones,2)
             if self.on_step is not None:
                 self.on_step()
 
-        observations = self.get_obs()
-        states = tf.unstack(tf.cast(self.states, tf.float32))
-        shoot_mask = self.get_shoot_mask()
-        _, last_values, _ = model.run(observations[tf.newaxis], states, shoot_mask)
+        observations = tf.concat([eng.get_obs() for eng in self.engines], 0)[tf.newaxis]
+        states = tf.concat([eng.lstm_states for eng in self.engines], 1)
+        shoot_mask = tf.concat(
+            [eng.get_action_mask() for eng in self.engines], 0
+        )
+        _, last_values, _ = model.run(observations, states, shoot_mask)
 
         # Insert into last slot the last values
         m_values[-1] = last_values[:, :, 0]
         m_rewards[-1] = last_values[:, :, 0]
 
         if self.train_iteration == 0:
-            _ = old_model.run(observations[tf.newaxis], states, shoot_mask)
+            _ = old_model.run(observations, states, shoot_mask)
 
         # p, l, v = model.prob(observations, states, shoot_mask)
         # print([p[0:4] for p in p], [l[0:4] for l in l], v[0:4])
@@ -235,9 +231,9 @@ class Runner(object):
         # Assign current policy to old policy before update
         trainer.copy_to_oldmodel()
 
-        epochs = False
+        epochs = True
         if epochs:
-            num_batches = 8
+            num_batches = 4
             batch_size = (n_robots // num_batches) + 1
             for _ in range(4):
                 order = np.arange(n_robots)
@@ -246,14 +242,14 @@ class Runner(object):
                     slc = slice(i * batch_size, (i + 1) * batch_size)
                     # Pass data to trainer, managing the model.
                     losses = trainer.train(
-                        m_observations[order][slc],
-                        tf.unstack(m_states[0][order][slc], axis=1),
-                        advs,
-                        rets,
-                        m_actions[order][slc],
-                        m_neglogps[order][slc],
-                        m_shoot_masks[order][slc],
-                        m_dones,
+                        m_observations[:, order][:, slc],
+                        tf.unstack(m_states[0][:, order][:, slc]),
+                        advs[:, order][:, slc],
+                        rets[:, order][:, slc],
+                        m_actions[:, order][:, slc],
+                        m_neglogps[:, order][:, slc],
+                        m_shoot_masks[:, order][:, slc],
+                        m_dones[:, order][:, slc],
                     )
         else:
             # Pass data to trainer, managing the model.
@@ -271,22 +267,25 @@ class Runner(object):
         # Checkpoint manager will save every x steps
         trainer.checkpoint()
         if not WANDBOFF:
-            wandb.log(
-                {
-                    "rewards": wandb.Histogram(m_rewards, num_bins=256),
-                    "mean_reward": m_rewards.mean(),
-                    "loss": losses.loss,
-                    "actor": losses.actor,
-                    "critic": losses.critic,
-                    "ratio": wandb.Histogram(losses.ratio.numpy(), num_bins=256),
-                    "ratio_clipped": wandb.Histogram(
-                        losses.ratio_clipped.numpy(), num_bins=256
-                    ),
-                    "entropy": losses.entropy,
-                    "advantage": losses.advantage,
-                    "values": losses.value,
-                }
-            )
+            log_dict = {
+                "rewards": wandb.Histogram(m_rewards, num_bins=128),
+                "mean_reward": m_rewards.mean(),
+                "returns": wandb.Histogram(rets, num_bins=128),
+                "mean_return": rets.mean(),
+                "loss": losses.loss,
+                "actor": losses.actor,
+                "critic": losses.critic,
+                "ratio": wandb.Histogram(losses.ratio, num_bins=128),
+                "ratio_clipped": wandb.Histogram(losses.ratio_clipped, num_bins=128),
+                "entropy": losses.entropy,
+                "shoot_entropy": losses.entropies[0],
+                "turn_entropy": losses.entropies[1],
+                "move_entropy": losses.entropies[2],
+                "turret_entropy": losses.entropies[3],
+                "advantage": losses.advantage,
+                "values": losses.value,
+            }
+            wandb.log(log_dict)
         if np.isnan(losses[0].numpy()):
             raise RuntimeError
         self.train_iteration += 1
@@ -322,7 +321,6 @@ def main(steps, envs, render=False, wandboff=False):
     for iteration in range(1000000):
         timer.start()
         # reset the lstm states
-        runner.init_states()
         runner.train()
         timer.stop()
         print(iteration, timer.log_str())

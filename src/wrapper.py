@@ -34,7 +34,7 @@ class Dummy(Robot):
         self.norm_value = 0.0  # Used for displaying predicted value
         self.opponents = [r for r in kwargs["all_robots"] if r != self]
         self.prev_action = np.zeros(len(ACTION_DIMS), dtype=np.uint8)
-
+        self.lstmstate = np.zeros((2, 512), dtype=np.float32)
 
     def run(self):
         pass

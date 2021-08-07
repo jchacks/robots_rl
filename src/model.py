@@ -10,8 +10,10 @@ layers.LSTMCell
 
 Losses = namedtuple(
     "Losses",
-    "loss,actor,critic,ratio,ratio_clipped,entropy,entropies,advantage,value,d_grads,d_grads_actor",
+    "loss,actor,critic,ratio,ratio_clipped,entropy,entropies,advantage,value,d_grads,d_grads_actor,d_grads_critic",
 )
+
+ACTION_DIMS = (1, 3, 3, 3)
 
 
 def map_numpy(func):
@@ -102,14 +104,14 @@ class Critic(tf.Module):
     def __init__(self, name="critic") -> None:
         super().__init__(name=name)
         self.d1 = layers.Dense(32, activation="elu")
-        # self.d2 = layers.Dense(32, activation="elu")
+        self.d2 = layers.Dense(32, activation="elu")
         # self.d3 = layers.Dense(128, activation="elu")
         self.o = layers.Dense(1)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
-        # x = self.d2(x)
+        x = self.d2(x)
         # x = self.d3(x)
         return self.o(x)
 
@@ -119,14 +121,14 @@ class Actor(tf.Module):
         super().__init__(name=name)
         self.num_actions = np.sum(action_space)
         self.d1 = layers.Dense(128, activation="elu")
-        # self.d2 = layers.Dense(256, activation="elu")
+        self.d2 = layers.Dense(128, activation="elu")
         # self.d3 = layers.Dense(256, activation="elu")
         self.o = layers.Dense(self.num_actions)
 
     @tf.Module.with_name_scope
     def __call__(self, x):
         x = self.d1(x)
-        # x = self.d2(x)
+        x = self.d2(x)
         # x = self.d3(x)
         return self.o(x)
 
@@ -135,11 +137,11 @@ class Model(tf.Module):
     def __init__(self, action_space, name="model"):
         super().__init__(name=name)
         self.action_space = action_space
-        self.p1 = layers.Dense(64, activation="elu")
-        self.lstm = LSTM(units=128)
+        self.p1 = layers.Dense(128, activation="elu")
+        self.lstm = LSTM(units=512)
         self.s1 = layers.Dense(128, activation="elu")
         self.d1 = layers.Dense(256, activation="elu")
-        # self.d2 = layers.Dense(128, activation="elu")
+        self.d2 = layers.Dense(256, activation="elu")
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
@@ -150,7 +152,7 @@ class Model(tf.Module):
         obs = self.s1(obs)  # Scaling layer
         latent = tf.concat([latent, obs], axis=-1)
         latent = self.d1(latent)
-        # latent = self.d2(latent)
+        latent = self.d2(latent)
         return self.actor(latent), self.critic(latent), tf.stack(states)
 
     def initial_state(self, batch_size):
@@ -178,66 +180,34 @@ class Model(tf.Module):
             value.numpy(),
         )
 
-    @map_numpy
     @tf.function
     def sample(self, obs, states, shoot_mask):
         print("Tracing sample")
         logits, value, states = self(obs, states)
         dist = self.distribution(logits, shoot_mask)
         actions = dist.sample()
-        return actions, value, dist.neglogp(actions), states
+        return actions, value, states
 
-    @map_numpy
     def run(self, obs, states, shoot_mask):
         logits, value, states = self(obs, states)
         dist = self.distribution(logits, shoot_mask)
         return dist.mode(), value, states
 
 
-class Trainer(object):
-    def __init__(
-        self,
-        model,
-        old_model,
-        save_path=f"{PROJECT_ROOT}/ckpts",
-        interval=10,
-        critic_scale=0.6,
-        entropy_scale=0.03,
-        learning_rate=3e-3,
-        epsilon=0.13,
-    ) -> None:
-        """Class to manage training a model.
-        Contains Optimiser and CheckpointManager.
-
-        Args:
-            model ([type]): Model to train.
-            save_path (str, optional): Checkpoint path. Defaults to '../ckpts'.
-            interval (int, optional): Interval on which to save checkpoints. Defaults to 500.
-            critic_scale (float, optional): Scale of critic in the loss function. Defaults to 0.2.
-            entropy_scale (float, optional): Scale of entropy in the loss function. Defaults to 0.05.
-        """
-        self.learning_rate = learning_rate
-        self.optimiser = tf.keras.optimizers.SGD(
-            learning_rate=self.learning_rate, momentum=0.5, nesterov=True
-        )
-        # self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
-        self.model = model
-        self.old_model = old_model
-
-        self.ckpt = tf.train.Checkpoint(
-            step=tf.Variable(1), optimizer=self.optimiser, model=model
-        )
+class ModelManager:
+    def __init__(self, model=None) -> None:
+        self.model = Model(ACTION_DIMS) if model is None else model
+        self.ckpt = tf.train.Checkpoint(step=tf.Variable(1), model=self.model)
+        self.save_path = f"{PROJECT_ROOT}/ckpts"
+        interval = 10
         self.manager = tf.train.CheckpointManager(
             self.ckpt,
-            save_path,
-            max_to_keep=3,
+            self.save_path,
+            max_to_keep=10,
             keep_checkpoint_every_n_hours=1,
             step_counter=self.ckpt.step,
             checkpoint_interval=interval,
         )
-        self.critic_scale = critic_scale
-        self.entropy_scale = entropy_scale
-        self.epsilon = epsilon
 
     def checkpoint(self):
         self.ckpt.step.assign_add(1)
@@ -248,6 +218,69 @@ class Trainer(object):
                     int(self.ckpt.step), save_path
                 )
             )
+            return True
+        return False
+
+    def restore(self, partial=None, offset=None):
+        if offset is None:
+            checkpoint = tf.train.latest_checkpoint(self.save_path)
+        else:
+            # Check checkpoints otherwise load None
+            try:
+                checkpoint = self.manager.checkpoints[offset]
+            except IndexError:
+                checkpoint = None
+
+        status = self.ckpt.restore(checkpoint)
+
+        if partial:
+            status.expect_partial()
+        elif partial is False:
+            status.assert_consumed()
+        if checkpoint is not None:
+            print("Restored from {}".format(checkpoint))
+        else:
+            print("Initializing from scratch.")
+
+
+class Trainer(object):
+    def __init__(
+        self,
+        model,
+        critic_scale=0.7,
+        entropy_scale=0.01,
+        learning_rate=3e-6,
+        epsilon=0.2,
+    ) -> None:
+        """Class to manage training a model.
+        Contains Optimiser and training function.
+
+        Args:
+            model ([type]): Model to train.
+            save_path (str, optional): Checkpoint path. Defaults to '../ckpts'.
+            interval (int, optional): Interval on which to save checkpoints. Defaults to 500.
+            critic_scale (float, optional): Scale of critic in the loss function. Defaults to 0.2.
+            entropy_scale (float, optional): Scale of entropy in the loss function. Defaults to 0.05.
+        """
+        self.learning_rate = learning_rate
+        # self.optimiser = tf.keras.optimizers.SGD(
+        #     learning_rate=self.learning_rate, momentum=0.5, nesterov=True
+        # )
+        self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
+        self.model_manager = ModelManager(model)
+        self.model_manager.restore()
+        self.model = model
+        self.old_model = Model(ACTION_DIMS)
+        self.copy_to_oldmodel()
+
+        self.critic_scale = critic_scale
+        self.entropy_scale = entropy_scale
+        self.epsilon = epsilon
+
+    def copy_to_oldmodel(self):
+        # Assign current policy to old policy before update
+        for v1, v2 in zip(self.model.variables, self.old_model.variables):
+            v2.assign(v1)
 
     @tf.function
     def train(
@@ -257,7 +290,6 @@ class Trainer(object):
         advantage,
         returns,
         actions,
-        neglogp,
         shoot_masks,
         dones,
         norm_advs=True,
@@ -283,8 +315,6 @@ class Trainer(object):
         advantage = tf.cast(advantage, tf.float32)
         returns = tf.cast(returns, tf.float32)
         dones = tf.cast(dones, tf.float32)
-        # rewards = tf.cast(rewards, tf.float32)
-        # advantage = rewards - values
 
         # Record the mean advs before norm for debugging
         d_adv = tf.reduce_mean(advantage)
@@ -318,7 +348,7 @@ class Trainer(object):
             c_losses = (vpred[:, 0] - returns) ** 2
             c_loss = tf.reduce_mean(c_losses)
 
-            entropies = [e * s for e, s in zip(pd.entropy(), [1.2, 1.0, 1.0, 1.0])]
+            entropies = [e * 1.0 for e, s in zip(pd.entropy(), [1.5, 1.0, 1.0, 1.0])]
             entropy_reg = tf.reduce_mean(entropies)
             loss = (
                 a_loss
@@ -339,13 +369,17 @@ class Trainer(object):
         self.optimiser.apply_gradients(grads_and_vars)
 
         d_grads = tf.reduce_mean([tf.reduce_mean(g) for g in grads])
-        d_grads_actor = tf.reduce_mean(
-            [
-                tf.reduce_mean(g)
-                for g, v in zip(grads, training_variables)
-                if v.name.startswith("actor/")
-            ]
-        )
+        d_grads_actor = [
+            tf.reduce_mean(g)
+            for g, v in zip(grads, training_variables)
+            if v.name.startswith("actor/")
+        ]
+
+        d_grads_critic = [
+            tf.reduce_mean(g)
+            for g, v in zip(grads, training_variables)
+            if v.name.startswith("critic/")
+        ]
 
         d_val = tf.reduce_mean(vpred)
         return Losses(
@@ -360,20 +394,5 @@ class Trainer(object):
             d_val,
             d_grads,
             d_grads_actor,
+            d_grads_critic,
         )
-
-    def copy_to_oldmodel(self):
-        # Assign current policy to old policy before update
-        for v1, v2 in zip(self.model.variables, self.old_model.variables):
-            v2.assign(v1)
-
-    def restore(self, partial=None):
-        status = self.ckpt.restore(self.manager.latest_checkpoint)
-        if partial:
-            status.expect_partial()
-        elif partial is False:
-            status.assert_consumed()
-        if self.manager.latest_checkpoint:
-            print("Restored from {}".format(self.manager.latest_checkpoint))
-        else:
-            print("Initializing from scratch.")

@@ -10,9 +10,12 @@ from robots.engine import Engine
 from robots.robot.utils import *
 from robots.ui.utils import Colors
 
-from model import Model, Trainer
-from utils import cast
+from model import Model, ModelManager, Trainer
+from utils import cast, Timer
 from wrapper import AITrainingBattle, Dummy
+
+
+timer = Timer()
 
 
 def parse_args():
@@ -30,13 +33,28 @@ def parse_args():
 
 
 ACTION_DIMS = (1, 3, 3, 3)
-model = Model(ACTION_DIMS)
-robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-size = (600, 600)
-app = App(size=size)
+model_manager = ModelManager()
+model = model_manager.model
 
+class EnvEngine(Engine):
+    def __init__(self):
+        robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
 
-class TestingEngine(Engine):
+        super().__init__(
+            robots,
+            (600, 600),
+            bullet_collisions_enabled=False,
+            gun_heat_enabled=True,
+            energy_decay_enabled=False,
+            rate=-1,
+        )
+
+    def init(self):
+        super().init(robot_kwargs={"all_robots": self.robots})
+        self.lstm_states = tf.zeros(
+            (2, 2, 512), dtype=tf.float32
+        )  # 2[c,h], 2 robots, 128 hidden
+
     def init_robotdata(self, robot):
         robot.position = np.random.uniform(np.array(self.size))
         robot.base_rotation = random.random() * 2 * math.pi
@@ -44,100 +62,76 @@ class TestingEngine(Engine):
         robot.radar_rotation = robot.turret_rotation
         robot.energy = 100
 
+    def get_obs(self):
+        return np.stack([robot.get_obs() for robot in self.robots])
 
-eng = TestingEngine(robots, size)
+    def get_action_mask(self):
+        return np.stack([r.turret_heat > 0 for r in self.robots])
 
-# Simplify battles
-eng.ENERGY_DECAY_ENABLED = False
-eng.GUN_HEAT_ENABLED = True
-eng.BULLET_COLLISIONS_ENABLED = False
+    def step(self, actions):
+        for robot, action in zip(self.robots, actions):
+            robot.assign_actions(action)
+            robot.prev_action = action
 
+        timer.start("super_step")
+        super().step()
+        timer.stop("super_step")
+
+        rewards = []
+        for robot in self.robots:
+            reward = (robot.energy - robot.previous_energy) / 100 - 0.1
+            if self.is_finished():
+                if robot.energy > 0:
+                    reward += 5 + robot.energy / 100
+                else:
+                    reward -= 5
+            rewards.append(reward)
+
+        return rewards, self.get_obs(), self.is_finished()
+
+
+
+app = App(size=(600, 600), fps_target=60)
+eng = EnvEngine()
 battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
 battle.bw.overlay.bars.append(("value", Colors.B, Colors.R))
 battle.bw.overlay.bars.append(("norm_value", Colors.W, Colors.K))
 app.child = battle
-# Use the eng create by battle
-
-
-robot_map = {}
-inv_robot_map = {}
-for robot in eng.robots:
-    idx = len(robot_map)
-    robot_map[idx] = robot
-    inv_robot_map[robot] = idx
-
 
 app.console.add_command("sim", eng.set_rate, help="Sets the Simulation rate.")
-
-# Simplify battles
-eng.ENERGY_DECAY_ENABLED = False
-eng.GUN_HEAT_ENABLED = True
-eng.BULLET_COLLISIONS_ENABLED = False
-
-
-@cast(tf.float32)
-def get_obs():
-    return tf.stack([robot_map[i].get_obs() for i in range(len(robot_map))])
-
-
-@cast(tf.float32)
-def get_states():
-    """Retrieves states with correct dims that were previously saved as an
-    attribute on the engine instances."""
-    return tf.stack([robot_map[i].lstmstate for i in range(len(robot_map))], axis=1)
-
-
-@cast(tf.bool)
-def get_shoot_mask():
-    return tf.stack([r.turret_heat > 0 for r in eng.robots])
 
 
 def main(debug=False, sample=False):
     eng.set_rate(60)
     while True:
-        trainer = Trainer(model, None)
-        trainer.restore(partial=True)
-        eng.init(robot_kwargs={"all_robots": eng.robots})
-        robot_map = {}
-        inv_robot_map = {}
-        for i, robot in enumerate(eng.robots):
-            robot_map[i] = robot
-            inv_robot_map[robot] = i
-            robot.memory = []
-
-        _states = model.initial_state(len(robot_map))
-        _prev_actions = tf.zeros(
-            (1, len(robot_map), len(ACTION_DIMS)), dtype=np.uint8
-        )
+        eng.init()
+        model_manager.restore()
+        obs = eng.get_obs()
 
         print("Running test")
         while not eng.is_finished():
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
-            obs = get_obs()[tf.newaxis]
             
-            prev_actions = tf.unstack(_prev_actions, axis=-1)   
-            oha = [tf.one_hot(act, n) for act, n in zip(prev_actions, ACTION_DIMS)]
-            oha = tf.concat(oha, -1)
-            obs = tf.concat([obs, oha], axis=-1)
+            actions, value, new_states = model.sample(
+                obs[np.newaxis], 
+                eng.get_lstmstate(), 
+                eng.get_action_mask()[np.newaxis]
+            )
 
-            states = tf.unstack(tf.cast(_states, tf.float32))
-            if sample:
-                actions, value, _, new_states = model.sample(
-                    obs, states, get_shoot_mask()
-                )
-            else:
-                actions, value, new_states = model.run(obs, states, get_shoot_mask())
+            actions = actions.numpy()
+            value = value.numpy()
+            new_states = new_states.numpy()
 
-            for i, robot in robot_map.items():
-                robot.assign_actions(actions[0, i])
+            _, obs, _ = eng.step(actions[0])
+            eng.lstm_states = new_states
+
+            for i, robot in enumerate(eng.robots):
                 robot.value = (value[0, i, 0] + 8) / 16
                 robot.norm_value = (value[0, i, 0] - value.min()) / (
                     value.max() - value.min()
                 )
-
-            _states = new_states
 
             if debug:
                 for i, r in enumerate(robots):
@@ -151,7 +145,6 @@ def main(debug=False, sample=False):
                         actions[i],
                         value[i],
                     )
-            eng.step()
 
 
 if __name__ == "__main__":

@@ -37,9 +37,8 @@ model_manager = ModelManager()
 model = model_manager.model
 
 class EnvEngine(Engine):
-    def __init__(self):
+    def __init__(self, i=None):
         robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-
         super().__init__(
             robots,
             (600, 600),
@@ -51,9 +50,6 @@ class EnvEngine(Engine):
 
     def init(self):
         super().init(robot_kwargs={"all_robots": self.robots})
-        self.lstm_states = tf.zeros(
-            (2, 2, 512), dtype=tf.float32
-        )  # 2[c,h], 2 robots, 128 hidden
 
     def init_robotdata(self, robot):
         robot.position = np.random.uniform(np.array(self.size))
@@ -64,6 +60,13 @@ class EnvEngine(Engine):
 
     def get_obs(self):
         return np.stack([robot.get_obs() for robot in self.robots])
+
+    def get_lstmstate(self):
+        return np.stack([robot.lstmstate for robot in self.robots], 1)
+
+    def set_lstmstate(self, states):
+        for i, robot in enumerate(self.robots):
+            robot.lstmstate = states[:, i]
 
     def get_action_mask(self):
         return np.stack([r.turret_heat > 0 for r in self.robots])
@@ -79,13 +82,19 @@ class EnvEngine(Engine):
 
         rewards = []
         for robot in self.robots:
-            reward = (robot.energy - robot.previous_energy) / 100 - 0.1
+            reward = (robot.energy - robot.previous_energy) / 100
             if self.is_finished():
                 if robot.energy > 0:
                     reward += 5 + robot.energy / 100
                 else:
                     reward -= 5
             rewards.append(reward)
+
+        a = rewards[0]
+        b = rewards[1]
+        # Ensure 0 sum and minus a bit
+        rewards[0] = a - b
+        rewards[1] = b - a
 
         return rewards, self.get_obs(), self.is_finished()
 
@@ -105,6 +114,8 @@ def main(debug=False, sample=False):
     eng.set_rate(60)
     while True:
         eng.init()
+        for robot in eng.robots:
+            print(robot.fire_power)
         model_manager.restore()
         obs = eng.get_obs()
 
@@ -115,17 +126,16 @@ def main(debug=False, sample=False):
             app.step()
             
             actions, value, new_states = model.sample(
-                obs[np.newaxis], 
+                obs[np.newaxis].astype(np.float32), 
                 eng.get_lstmstate(), 
                 eng.get_action_mask()[np.newaxis]
             )
 
             actions = actions.numpy()
             value = value.numpy()
-            new_states = new_states.numpy()
+            eng.set_lstmstate(new_states.numpy())
 
             _, obs, _ = eng.step(actions[0])
-            eng.lstm_states = new_states
 
             for i, robot in enumerate(eng.robots):
                 robot.value = (value[0, i, 0] + 8) / 16

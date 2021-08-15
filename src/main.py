@@ -1,5 +1,5 @@
 import argparse
-from collections import defaultdict
+from collections import defaultdict, deque
 import random
 import time
 
@@ -31,7 +31,7 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=8000,
+        default=500,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
@@ -77,7 +77,7 @@ class EnvEngine(Engine):
 
     def set_lstmstate(self, states):
         for i, robot in enumerate(self.robots):
-            robot.lstmstate = states[:, i]
+            robot.lstmstate[:] = states[:, i]
 
     def get_action_mask(self):
         return np.stack([r.turret_heat > 0 for r in self.robots])
@@ -93,20 +93,34 @@ class EnvEngine(Engine):
 
         rewards = []
         for robot in self.robots:
-            reward = (robot.energy - robot.previous_energy) / 100
+            curr = robot.previous_energy / 100
+            curr = (curr + 1 - (1 - curr)**4)/2
+            after = robot.energy / 100
+            after = (after + 1 - (1 - after)**4)/2
+            reward = (after - curr)
+            reward = max(0,reward * 10) + min(0, reward * 5)
+
             if self.is_finished():
                 if robot.energy > 0:
-                    reward += 5 + robot.energy / 100
+                    reward += 5
                 else:
                     reward -= 5
             rewards.append(reward)
 
         a = rewards[0]
         b = rewards[1]
+
+         # Record the rewards
+        self.robots[0].total_reward += rewards[0]
+        self.robots[1].total_reward += rewards[1]
+
         # Ensure 0 sum and minus a bit
         rewards[0] = a - b
         rewards[1] = b - a
 
+        rewards[0] -= 0.1
+        rewards[1] -= 0.1
+        
         return rewards, self.get_obs(), self.is_finished()
 
 
@@ -117,7 +131,7 @@ class Runner(object):
         self.train_iteration = 0
         self.nenvs = nenvs
         self.steps = steps
-        self.gamma = 0.97
+        self.gamma = 0.99
         self.lmbda = 0.95  # discounted factor
         model = Model(ACTION_DIMS)
         self.trainer = Trainer(model)
@@ -132,6 +146,9 @@ class Runner(object):
         self.all_robots = np.array([r for env in self.engines for r in env.robots])
         self.num_robots = len(self.all_robots)
         self.allocate_agents()
+
+        self.lenbuffer = deque(maxlen=100)
+        self.rewbuffer = deque(maxlen=100)
 
         # Get first observations from each Engine
         self.observations = np.concatenate([eng.get_obs() for eng in self.engines], 0)[
@@ -164,12 +181,12 @@ class Runner(object):
                 continue
             print(f"\tLoading {model} {k}")
             manager = ModelManager(model)
-            manager.restore(offset=-k * 2)
+            manager.restore(offset=-k * 4)
 
     def do_sample(self, observations, states, shoot_mask):
         actions = np.zeros((1, self.num_robots, 4), np.uint8)
         values = np.zeros((1, self.num_robots, 1))
-        new_states = np.zeros((2, self.num_robots, 512))
+        new_states = np.zeros((2, self.num_robots, 128), np.float32)
         for name, indicies in self.allocation.items():
             a, v, s = self.models[name].sample(
                 observations[:, indicies], states[:, indicies], shoot_mask[indicies]
@@ -188,16 +205,16 @@ class Runner(object):
         shoot_mask = np.concatenate([eng.get_action_mask() for eng in self.engines], 0)
 
         actions, values, new_states = self.do_sample(
-            self.observations, states, shoot_mask
+            self.observations.astype(np.float32), states, shoot_mask
         )
         timer.stop("tfstep")
 
         _actions = actions.reshape(self.nenvs, 2, 4)
-        new_states = new_states.reshape(2, self.nenvs, 2, 512)
+        new_states = new_states.reshape(2, self.nenvs, 2, 128)
 
         dones = []
         rewards = np.zeros((self.nenvs, 2))
-        self.observations = np.zeros((self.nenvs, 2, 22))
+        self.observations = np.zeros((self.nenvs, 2, 23))
 
         timer.start("step")
         for i, eng in enumerate(self.engines):
@@ -227,12 +244,14 @@ class Runner(object):
 
         for i, eng in enumerate(self.engines):
             if eng.is_finished():
+                self.rewbuffer.extend([r.total_reward for r in eng.robots])
+                self.lenbuffer.append(eng.steps)
                 eng.init()
                 # Get the new initial observations
                 self.observations[i] = eng.get_obs()
 
         # Record observations for next iteration
-        self.observations = self.observations.reshape(1, self.nenvs * 2, 22)
+        self.observations = self.observations.reshape(1, self.nenvs * 2, 23)
 
         timer.stop("run")
         return memory
@@ -245,8 +264,8 @@ class Runner(object):
         m_rewards = np.zeros((self.steps + 1, n_robots), dtype=np.float32)
         m_values = np.zeros((self.steps + 1, n_robots), dtype=np.float32)
         m_dones = np.zeros((self.steps, n_robots), dtype=np.bool)
-        m_observations = np.zeros((self.steps, n_robots, 22), dtype=np.float32)
-        m_states = np.zeros((self.steps, 2, n_robots, 512), dtype=np.float32)
+        m_observations = np.zeros((self.steps, n_robots, 23), dtype=np.float32)
+        m_states = np.zeros((self.steps, 2, n_robots, 128), dtype=np.float32)
         m_shoot_masks = np.zeros((self.steps, n_robots), dtype=np.bool)
 
         for i in range(self.steps):
@@ -298,7 +317,7 @@ class Runner(object):
         if epochs:
             num_batches = 4
             batch_size = (n_robots // num_batches) + 1
-            for _ in range(4):
+            for _ in range(3):
                 order = np.arange(n_robots)
                 np.random.shuffle(order)
                 for i in range(num_batches):
@@ -336,6 +355,9 @@ class Runner(object):
                 "returns": wandb.Histogram(rets, num_bins=128),
                 "mean_reward": m_rewards.mean(),
                 "mean_return": rets.mean(),
+
+                "mean_done_reward": np.mean(self.rewbuffer),
+                "mean_done_length": np.mean(self.lenbuffer),
                 "loss": losses.loss,
                 "actor": losses.actor,
                 "grads_actor": wandb.Histogram(losses.d_grads_actor),
@@ -343,13 +365,14 @@ class Runner(object):
                 "grads_critic": wandb.Histogram(losses.d_grads_critic),
                 "ratio": wandb.Histogram(losses.ratio, num_bins=128),
                 "ratio_clipped": wandb.Histogram(losses.ratio_clipped, num_bins=128),
-                "entropy": losses.entropy,
+                "entropy_reg": losses.entropy,
                 "shoot_entropy": losses.entropies[0],
                 "turn_entropy": losses.entropies[1],
                 "move_entropy": losses.entropies[2],
                 "turret_entropy": losses.entropies[3],
                 "advantage": losses.advantage,
                 "values": losses.value,
+                "regularisation": losses.reg_loss,
             }
             wandb.log(log_dict)
         if np.isnan(losses[0].numpy()):

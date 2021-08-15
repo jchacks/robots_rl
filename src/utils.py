@@ -59,6 +59,16 @@ class Timer(object):
         self.times_called[name] = 0
         return np.mean(diffs) * num
 
+    def wrap(self, name):
+        def wrapper(func):
+            def inner(*args, **kwargs):
+                self.start(name)
+                ret = func(*args, **kwargs)
+                self.stop(name)
+                return ret
+            return inner
+        return wrapper
+
     def log_str(self):
         return (
             "\n".join(
@@ -104,9 +114,8 @@ def get_advantage(rewards, values, masks, gamma=0.99, lmbda=0.95):
     deltas = rewards[:-1] + (gamma * values[1:] * masks) - values[:-1]
 
     gae = np.zeros(rewards.shape)
-    ret = np.zeros(rewards.shape)
+    lastgae = 0
     for i in reversed(range(len(deltas))):
-        gae[i] = deltas[i] + gamma * lmbda * masks[i] * gae[i + 1]
-        ret[i] = gae[i] + values[i]
-
+        gae[i] = lastgae = deltas[i] + gamma * lmbda * masks[i] * lastgae
+    ret = gae + values
     return gae[:-1], ret[:-1]

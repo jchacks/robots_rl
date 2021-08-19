@@ -1,14 +1,15 @@
 import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers, initializers, regularizers
-from distributions import GroupedPd, CategoricalPd, MaskedBernoulliPd
+from tensorflow.python.ops.variables import Variable
+from distributions import GroupedPd, CategoricalPd, MaskedBernoulliPd, MaskedCategoricalPd
 from utils import PROJECT_ROOT
 from collections import namedtuple
 import operator
 
 import os
 
-if os.environ.get('DEBUG'):
+if os.environ.get("DEBUG"):
     tf.config.run_functions_eagerly(True)
 
 Losses = namedtuple(
@@ -17,10 +18,8 @@ Losses = namedtuple(
     "advantage,value,d_grads,d_grads_actor,d_grads_critic,reg_loss",
 )
 
-ACTION_DIMS = (1, 3, 3, 3)
-REG_RATE = 0.01
-
-
+ACTION_DIMS = (1, 3 * 3 * 3)
+REG_RATE = 1e-5
 
 
 def map_numpy(func):
@@ -84,9 +83,19 @@ class LSTM(tf.keras.layers.Layer):
         )
         self.built = True
 
-    def call(self, inputs, states, masks=None):
+    def call(self, inputs, states, dones=None):
+        """Process input to LSTM returning outputs/states
+
+        Args:
+            inputs ([type]): Sequence of inputs (timesteps, batchsize, features)
+            states ([type]): The first state provided for this sequence
+            masks ([type], optional): Masks for resetting state. Defaults to None.
+
+        Returns:
+            [type]: [description]
+        """
         c, h = tf.unstack(states)
-        masks = 1 - masks if masks is not None else tf.ones(len(inputs))
+        masks = 1 - dones if dones is not None else tf.ones(len(inputs))
         masks = tf.expand_dims(masks, -1)
         output = []
 
@@ -112,6 +121,28 @@ class LSTM(tf.keras.layers.Layer):
         return tf.zeros(shape=[2, batch_size, self.units], dtype=dtype)
 
 
+class LearningNormalization(tf.keras.layers.Layer):
+    def __init__(self, axis=-2):
+        super(LearningNormalization, self).__init__()
+        self.axis = axis
+
+    def build(self, input_shape):
+        input_shape = tf.TensorShape(input_shape)
+        last_dim = int(input_shape[-1])
+        self.means = Variable(tf.zeros(last_dim, self.dtype), trainable=False)
+        self.stds = Variable(tf.ones(last_dim, self.dtype), trainable=False)
+
+    def call(self, x: tf.Tensor, training=False):
+        if training:
+            _x = tf.reshape(x, (-1, x.shape[-1]))
+            print("Norm Tracing, training")
+            mean = tf.math.reduce_mean(_x, self.axis)
+            stddev = tf.math.reduce_std(_x, self.axis)
+            self.means.assign_sub((1 - 0.999) * (self.means - mean))
+            self.stds.assign_sub((1 - 0.999) * (self.stds - stddev))
+        return tf.clip_by_value((x - self.means) / (self.stds + 1e-8),-5.0,5.0)
+
+
 class Critic(tf.Module):
     def __init__(self, name="critic") -> None:
         super().__init__(name=name)
@@ -121,13 +152,18 @@ class Critic(tf.Module):
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.bn1 = layers.BatchNormalization()
+        self.d2 = layers.Dense(
+            16,
+            activation="elu",
+            kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
+        )
         self.o = layers.Dense(
             1, kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE)
         )
 
     @tf.Module.with_name_scope
     def __call__(self, x):
-        x = self.d1(x)
+        # x = self.d1(x)
         # x = self.d2(x)
         return self.o(x)
 
@@ -141,17 +177,16 @@ class Actor(tf.Module):
         super().__init__(name=name)
         self.num_actions = np.sum(action_space)
         self.d1 = layers.Dense(
-            32,
+            64,
             activation="elu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.bn1 = layers.BatchNormalization()
         self.d2 = layers.Dense(
-            32,
+            64,
             activation="elu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
-        self.bn2 = layers.BatchNormalization()
         self.o = layers.Dense(
             self.num_actions,
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
@@ -169,29 +204,31 @@ class Actor(tf.Module):
 
 
 class Model(tf.Module):
-    def __init__(self, action_space, name="model"):
+    def __init__(self, action_space, name="model", training=False):
         super().__init__(name=name)
+        self.training = training
         self.action_space = action_space
+        # self.bn0 = layers.BatchNormalization()
+        self.norm = LearningNormalization()
         self.lstm = LSTM(
             units=128,
             kernelx_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
             kernelh_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.d1 = layers.Dense(
-            96,
+            128,
             activation="elu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
-        self.bn1 = layers.BatchNormalization()
-        
+
         self.actor = Actor(self.action_space)
         self.critic = Critic()
 
     @tf.Module.with_name_scope
-    def __call__(self, obs, states, masks=None):
-        latent, states = self.lstm(obs, states, masks)
-        latent = tf.concat([latent, obs], axis=-1)
-        latent = self.d1(latent)
+    def __call__(self, obs, states, dones=None):
+        obs = self.norm(obs, training=self.training)
+        latent, states = self.lstm(obs, states, dones)
+        # latent = self.d1(latent)
         return self.actor(latent), self.critic(latent), tf.stack(states)
 
     @property
@@ -208,9 +245,10 @@ class Model(tf.Module):
         return GroupedPd(
             [
                 MaskedBernoulliPd(logits[0], shoot_mask),
+                # MaskedCategoricalPd(logits[1], shoot_mask[:,tf.newaxis]),
                 CategoricalPd(logits[1]),
-                CategoricalPd(logits[2]),
-                CategoricalPd(logits[3]),
+                # CategoricalPd(logits[2]),
+                # CategoricalPd(logits[3]),
             ]
         )
 
@@ -225,7 +263,11 @@ class Model(tf.Module):
 
     @tf.function
     def sample(self, obs, states, shoot_mask):
-        print("Tracing sample")
+        print(
+            f"Tracing sample, obs {obs.shape} {obs.dtype}, "
+            f"states {states.shape} {states.dtype}, "
+            f"mask {shoot_mask.shape} {shoot_mask.dtype}"
+        )
         logits, value, states = self(obs, states)
         dist = self.distribution(logits, shoot_mask)
         actions = dist.sample()
@@ -291,8 +333,8 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=0.07,
-        learning_rate=3e-4,
+        entropy_scale=1e-3,
+        learning_rate=5e-5,
         epsilon=0.2,
     ) -> None:
         """Class to manage training a model.
@@ -310,19 +352,23 @@ class Trainer(object):
         #     learning_rate=self.learning_rate, momentum=0.5, nesterov=True
         # )
         self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
-        self.model_manager = ModelManager(model)
+        self.ret_stddev_mean = None
+
+        self.sample_model = model
+        self.train_model = Model(ACTION_DIMS, training=True)
+
+        self.model_manager = ModelManager(self.train_model)
         self.model_manager.restore()
-        self.model = model
-        self.old_model = Model(ACTION_DIMS)
-        self.copy_to_oldmodel()
+        self.copy_to_current_model()
 
         self.critic_scale = critic_scale
         self.entropy_scale = entropy_scale
         self.epsilon = epsilon
 
-    def copy_to_oldmodel(self):
+    def copy_to_current_model(self):
+        print("Copying weights to sample_model")
         # Assign current policy to old policy before update
-        for v1, v2 in zip(self.model.variables, self.old_model.variables):
+        for v1, v2 in zip(self.train_model.variables, self.sample_model.variables):
             v2.assign(v1)
 
     @tf.function
@@ -360,6 +406,15 @@ class Trainer(object):
         returns = tf.cast(returns, tf.float32)
         dones = tf.cast(dones, tf.float32)
 
+        ret_stddev = tf.math.reduce_std(returns)
+        # Create ret stddev mean and initialise
+        if self.ret_stddev_mean is None:
+            self.ret_stddev_mean = tf.Variable(
+                ret_stddev, trainable=False, dtype=tf.float32
+            )
+        self.ret_stddev_mean.assign_sub((1 - 0.9) * (self.ret_stddev_mean - ret_stddev))
+        returns = returns / (self.ret_stddev_mean + 1e-8)
+
         # Record the mean advs before norm for debugging
         d_adv = tf.reduce_mean(advantage)
         if norm_advs:
@@ -367,18 +422,20 @@ class Trainer(object):
                 tf.math.reduce_std(advantage) + 1e-8
             )
 
-        oldlogits, _, _ = self.old_model(observations, states=states)
-        old_neglogp = self.old_model.distribution(oldlogits, shoot_masks).neglogp(
+        oldlogits, _, _ = self.sample_model(observations, states=states)
+        old_neglogp = self.sample_model.distribution(oldlogits, shoot_masks).neglogp(
             actions
         )
 
         with tf.GradientTape() as tape:
-            logits, vpred, _ = self.model(observations, states=states, masks=dones)
-            pd = self.model.distribution(logits, shoot_masks)
+            logits, vpred, _ = self.train_model(
+                observations, states=states, dones=dones
+            )
+            pd = self.train_model.distribution(logits, shoot_masks)
             neglogp = pd.neglogp(actions)
             # Actor loss
             # PPO
-            #! e^(-log(pi_old) -- log(pi)) = pi/pi_old
+            #! e^(-log(pi_old) -- log(pi)) =e^log(pi/pi_old) = pi/pi_old
             ratio = tf.exp(old_neglogp - neglogp)
             ratio_clipped = tf.clip_by_value(ratio, 1 - self.epsilon, 1 + self.epsilon)
 
@@ -392,7 +449,7 @@ class Trainer(object):
 
             entropies = pd.entropy()
             entropy_reg = (-self.entropy_scale) * tf.reduce_mean(entropies)
-            reg_loss = tf.reduce_mean(self.model.losses)
+            reg_loss = tf.reduce_mean(self.train_model.losses)
             loss = a_loss + (c_loss * self.critic_scale) + entropy_reg + reg_loss
 
         training_variables = tape.watched_variables()

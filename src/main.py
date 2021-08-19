@@ -11,7 +11,7 @@ from robots.robot.utils import *
 
 import wandb
 from model import Model, ModelManager, Trainer
-from utils import Timer, cast, discounted, get_advantage
+from utils import Timer, gae
 from wrapper import Dummy
 
 WANDBOFF = True
@@ -31,20 +31,20 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=500,
+        default=1000,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
         "-s",
         "--steps",
         type=int,
-        default=10,
+        default=20,
         help="Number of steps to use for training.",
     )
     return parser.parse_args()
 
 
-ACTION_DIMS = (1, 3, 3, 3)
+ACTION_DIMS = (1, 3 * 3 * 3)
 
 
 class EnvEngine(Engine):
@@ -52,7 +52,7 @@ class EnvEngine(Engine):
         robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
         super().__init__(
             robots,
-            (600, 600),
+            (300, 300),
             bullet_collisions_enabled=False,
             gun_heat_enabled=True,
             energy_decay_enabled=False,
@@ -84,6 +84,8 @@ class EnvEngine(Engine):
 
     def step(self, actions):
         for robot, action in zip(self.robots, actions):
+            robot.step_reward = 0
+            # assign action contains rewards
             robot.assign_actions(action)
             robot.prev_action = action
 
@@ -91,36 +93,29 @@ class EnvEngine(Engine):
         super().step()
         timer.stop("super_step")
 
-        rewards = []
+        # Add extra rewards to step_reward
         for robot in self.robots:
             curr = robot.previous_energy / 100
-            curr = (curr + 1 - (1 - curr)**4)/2
             after = robot.energy / 100
-            after = (after + 1 - (1 - after)**4)/2
-            reward = (after - curr)
-            reward = max(0,reward * 10) + min(0, reward * 5)
+
+            curr = (curr + 1 - (1 - curr) ** 4) / 2
+            after = (after + 1 - (1 - after) ** 4) / 2
+            robot.step_reward += (after - curr) * 2
 
             if self.is_finished():
                 if robot.energy > 0:
-                    reward += 5
+                    robot.step_reward += 5
                 else:
-                    reward -= 5
-            rewards.append(reward)
+                    robot.step_reward -= 5
 
-        a = rewards[0]
-        b = rewards[1]
+        rewards = np.array([r.step_reward for r in self.robots])
 
-         # Record the rewards
-        self.robots[0].total_reward += rewards[0]
-        self.robots[1].total_reward += rewards[1]
+        for i, robot in enumerate(self.robots):
+            robot.total_reward += rewards[i]
 
-        # Ensure 0 sum and minus a bit
-        rewards[0] = a - b
-        rewards[1] = b - a
-
-        rewards[0] -= 0.1
-        rewards[1] -= 0.1
-        
+        # Sub for more than 1 robot
+        rewards -= (rewards @ (1 - np.eye(len(rewards)))) / (len(rewards) - 1)
+        rewards -= 0.1
         return rewards, self.get_obs(), self.is_finished()
 
 
@@ -132,7 +127,7 @@ class Runner(object):
         self.nenvs = nenvs
         self.steps = steps
         self.gamma = 0.99
-        self.lmbda = 0.95  # discounted factor
+        self.lmbda = 0.97  
         model = Model(ACTION_DIMS)
         self.trainer = Trainer(model)
 
@@ -147,8 +142,10 @@ class Runner(object):
         self.num_robots = len(self.all_robots)
         self.allocate_agents()
 
-        self.lenbuffer = deque(maxlen=100)
-        self.rewbuffer = deque(maxlen=100)
+        self.lenbuffer = deque(maxlen=1000)
+        self.rewbuffer = deque(maxlen=1000)
+        self.bhitbuffer = deque(maxlen=1000)
+        self.bbybuffer = deque(maxlen=1000)
 
         # Get first observations from each Engine
         self.observations = np.concatenate([eng.get_obs() for eng in self.engines], 0)[
@@ -184,7 +181,7 @@ class Runner(object):
             manager.restore(offset=-k * 4)
 
     def do_sample(self, observations, states, shoot_mask):
-        actions = np.zeros((1, self.num_robots, 4), np.uint8)
+        actions = np.zeros((1, self.num_robots, len(ACTION_DIMS)), np.uint8)
         values = np.zeros((1, self.num_robots, 1))
         new_states = np.zeros((2, self.num_robots, 128), np.float32)
         for name, indicies in self.allocation.items():
@@ -209,7 +206,7 @@ class Runner(object):
         )
         timer.stop("tfstep")
 
-        _actions = actions.reshape(self.nenvs, 2, 4)
+        _actions = actions.reshape(self.nenvs, 2, len(ACTION_DIMS))
         new_states = new_states.reshape(2, self.nenvs, 2, 128)
 
         dones = []
@@ -244,8 +241,10 @@ class Runner(object):
 
         for i, eng in enumerate(self.engines):
             if eng.is_finished():
-                self.rewbuffer.extend([r.total_reward for r in eng.robots])
+                self.rewbuffer.append(np.mean([r.total_reward for r in eng.robots]))
                 self.lenbuffer.append(eng.steps)
+                self.bhitbuffer.append(np.mean([r.bullets_hit for r in eng.robots]))
+                self.bbybuffer.append(np.mean([r.hit_by_bullets for r in eng.robots]))
                 eng.init()
                 # Get the new initial observations
                 self.observations[i] = eng.get_obs()
@@ -306,12 +305,7 @@ class Runner(object):
         # print([p[0:4] for p in p], [l[0:4] for l in l], v[0:4])
 
         # disc_reward = discounted(m_rewards, m_dones, self.gamma)
-        advs, rets = get_advantage(
-            m_rewards, m_values, ~m_dones, self.gamma, self.lmbda
-        )
-
-        # Assign current policy to old policy before update
-        self.trainer.copy_to_oldmodel()
+        advs, rets = gae(m_rewards, m_values, ~m_dones, self.gamma, self.lmbda)
 
         epochs = True
         if epochs:
@@ -355,9 +349,10 @@ class Runner(object):
                 "returns": wandb.Histogram(rets, num_bins=128),
                 "mean_reward": m_rewards.mean(),
                 "mean_return": rets.mean(),
-
                 "mean_done_reward": np.mean(self.rewbuffer),
                 "mean_done_length": np.mean(self.lenbuffer),
+                "mean_bullets_hit": np.mean(self.bhitbuffer),
+                "mean_hit_by_bullets": np.mean(self.bbybuffer),
                 "loss": losses.loss,
                 "actor": losses.actor,
                 "grads_actor": wandb.Histogram(losses.d_grads_actor),
@@ -366,10 +361,11 @@ class Runner(object):
                 "ratio": wandb.Histogram(losses.ratio, num_bins=128),
                 "ratio_clipped": wandb.Histogram(losses.ratio_clipped, num_bins=128),
                 "entropy_reg": losses.entropy,
+                "entropy": np.mean(losses.entropies),
                 "shoot_entropy": losses.entropies[0],
-                "turn_entropy": losses.entropies[1],
-                "move_entropy": losses.entropies[2],
-                "turret_entropy": losses.entropies[3],
+                # "turn_entropy": losses.entropies[1],
+                # "move_entropy": losses.entropies[2],
+                # "turret_entropy": losses.entropies[3],
                 "advantage": losses.advantage,
                 "values": losses.value,
                 "regularisation": losses.reg_loss,
@@ -400,21 +396,24 @@ def main(steps, envs, render=False, wandboff=False):
     if render:
         # Todo clean up this interaction with Engine and Battle
         from robots.app import App
-
+        from robots.ui.utils import Colors
         from wrapper import AITrainingBattle
 
-        app = App(size=(600, 600), fps_target=60)
+        app = App(size=(300,300), fps_target=60)
         eng = runner.engines[-1]
-        battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
+        battle = AITrainingBattle(eng.robots, (300,300), eng=eng)
+        battle.bw.overlay.add_bar("step_reward", Colors.B, Colors.R, -2, 2)
+
         app.child = battle
         runner.on_step = app.step
 
     for iteration in range(1000000):
-        timer.start()
-        # reset the lstm states
-        runner.train()
-        timer.stop()
-        print(iteration, timer.log_str())
+        for _ in range(5):
+            timer.start()
+            runner.train()
+            timer.stop()
+            print(iteration, timer.log_str())
+        runner.trainer.copy_to_current_model()
 
 
 if __name__ == "__main__":

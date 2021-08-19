@@ -110,7 +110,7 @@ def discounted(rewards, dones, gamma=0.99):
     return np.stack(discounted[::-1])
 
 
-def get_advantage(rewards, values, masks, gamma=0.99, lmbda=0.95):
+def gae(rewards, values, masks, gamma=0.99, lmbda=0.95):
     deltas = rewards[:-1] + (gamma * values[1:] * masks) - values[:-1]
 
     gae = np.zeros(rewards.shape)

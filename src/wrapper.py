@@ -1,10 +1,12 @@
 from robots.app import Battle
 from robots.robot import Robot
 import numpy as np
+from robots.robot.events import *
 from utils import TURNING, MOVING
+import random
 
-ACTION_DIMS = (1, 3, 3, 3)
-OHA_ACTIONS = [np.eye(n + 1) for n in ACTION_DIMS]
+ACTION_DIMS = (1, 3 * 3 * 3)
+OHA_ACTIONS = [np.eye(n + 1) for n in (1, 3, 3, 3)]
 
 
 class AITrainingBattle(Battle):
@@ -36,11 +38,28 @@ class Dummy(Robot):
         self.opponents = [r for r in kwargs["all_robots"] if r != self]
         self.prev_action = np.zeros(len(ACTION_DIMS), dtype=np.uint8)
         self.lstmstate = np.zeros((2, 128), dtype=np.float32)
+
+        self.step_reward = 0
         self.total_reward = 0
-        self.fire_power = np.random.uniform(0.1,3.0)
+
+        self.bullets_hit = 0
+        self.hit_by_bullets = 0
+
+        self.fire_power = np.random.uniform(0.1, 3.0)
 
     def run(self):
         pass
+
+    def on_hit_by_bullet(self, event: HitByBulletEvent):
+        self.step_reward -= 0.5
+        self.hit_by_bullets += 1
+
+    def on_bullet_hit(self, event: BulletHitEvent):
+        self.step_reward += 2
+        self.bullets_hit += 1
+
+    def on_hit_wall(self, event: HitWallEvent):
+        self.step_reward -= 0.5
 
     def get_obs(self):
         s = np.array(self.battle_size)
@@ -52,9 +71,11 @@ class Dummy(Robot):
         turret = self.turret_rotation
         turret = np.array([np.cos(turret), np.sin(turret)])
 
-        oha = np.concatenate(
-            [l[act][:-1] for act, l in zip(self.prev_action, OHA_ACTIONS)]
-        )
+        shoot, other = self.prev_action
+        other = get_action(other, (3, 3, 3))
+        p_action = np.concatenate([[shoot], other])
+
+        oha = np.concatenate([l[act][:-1] for act, l in zip(p_action, OHA_ACTIONS)])
         obs = np.concatenate(
             [
                 [(self.energy / 50) - 1, self.turret_heat / 30, self.velocity / 8],
@@ -79,7 +100,7 @@ class Dummy(Robot):
                         # distance/300,
                         *(R @ direction),
                         attrs["velocity"] / 8,
-                        np.dot(turret, direction)
+                        np.dot(turret, direction),
                     ]
                 )
             )
@@ -88,12 +109,16 @@ class Dummy(Robot):
 
     def assign_actions(self, action):
         # Apply actions
-        shoot, turn, move, turret = action
-        # shoot, other = action
-        # turn, move, turret = get_action(other, (3, 3, 3))
+        # shoot, turn, move, turret = action
+        shoot, other = action
+        turn, move, turret = get_action(other, (3, 3, 3))
 
-        # if self.turret_heat > 0:
-        # shoot = 0
+        # Stop full rotations from giving rewards
+        if turn > 0:
+            self.step_reward -= 0.02
+        if turret > 0:
+            self.step_reward -= 0.02
+
         try:
             self.moving = MOVING[move]
             self.base_turning = TURNING[turn]
@@ -104,4 +129,15 @@ class Dummy(Robot):
             print("Failed assigning actions", self, turn, shoot)
             raise
         # return shoot, get_argmax((turn, move, turret), (3, 3, 3))
-        return shoot, turn, move, turret
+        # return shoot, turn, move, turret
+
+
+class Random(Dummy):
+    def run(self):
+        self.moving = MOVING[random.randint(0, 2)]
+        self.base_turning = TURNING[random.randint(0, 2)]
+        self.turret_turning = TURNING[random.randint(0, 2)]
+        self.should_fire = random.randint(0, 1)
+
+    def assign_actions(self, action):
+        pass

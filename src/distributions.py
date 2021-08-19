@@ -174,8 +174,8 @@ class MaskedBernoulliPd(Pd):
         self.mask = (
             mask if mask is not None else tf.zeros(self.orig_shape, dtype=tf.bool)
         )
-        self.logits = tf.reshape(logits, (-1, self.orig_shape[-1]))
         self.mask = tf.reshape(mask, (-1, self.orig_shape[-1]))
+        self.logits = tf.reshape(logits, (-1, self.orig_shape[-1]))
         self.logits = tf.where(self.mask, tf.float32.min, self.logits)
         self.ps = tf.sigmoid(self.logits)
 
@@ -227,6 +227,28 @@ class MaskedBernoulliPd(Pd):
         u = tf.random.uniform(tf.shape(self.ps))
         return tf.reshape(tf.cast(u < self.ps, tf.int64), self.orig_shape[:-1])
 
+
+
+class MaskedCategoricalPd(CategoricalPd):
+    def __init__(self, logits, mask):
+        """
+        Probability distributions from categorical input
+        :param logits: ([float]) the categorical logits input
+        """
+        super(MaskedCategoricalPd, self).__init__(logits)
+        self.mask = (
+            mask if mask is not None else tf.zeros(self.orig_shape, dtype=tf.bool)
+        )
+        self.logits = tf.where(self.mask, tf.float32.min, self.logits)
+
+    def entropy(self):
+        a_0 = self.logits - tf.reduce_max(self.logits, axis=-1, keepdims=True)
+        exp_a_0 = tf.exp(a_0)
+        z_0 = tf.reduce_sum(exp_a_0, axis=-1, keepdims=True)
+        p_0 = exp_a_0 / z_0
+        return tf.reduce_mean(
+            tf.reduce_sum(p_0 * (tf.math.log(z_0) - a_0), axis=-1), axis=-1
+        )
 
 class GroupedPd(Pd):
     def __init__(self, dists):

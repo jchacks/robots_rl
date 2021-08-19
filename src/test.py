@@ -4,15 +4,14 @@ import math
 import random
 
 import numpy as np
-import tensorflow as tf
 from robots.app import App
 from robots.engine import Engine
 from robots.robot.utils import *
 from robots.ui.utils import Colors
 
-from model import Model, ModelManager, Trainer
-from utils import cast, Timer
-from wrapper import AITrainingBattle, Dummy
+from model import ModelManager
+from utils import Timer
+from wrapper import AITrainingBattle, Dummy, Random
 
 
 timer = Timer()
@@ -36,12 +35,13 @@ ACTION_DIMS = (1, 3, 3, 3)
 model_manager = ModelManager()
 model = model_manager.model
 
+
 class EnvEngine(Engine):
     def __init__(self, i=None):
         robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
         super().__init__(
             robots,
-            (600, 600),
+            (300, 300),
             bullet_collisions_enabled=False,
             gun_heat_enabled=True,
             energy_decay_enabled=False,
@@ -79,32 +79,14 @@ class EnvEngine(Engine):
         timer.start("super_step")
         super().step()
         timer.stop("super_step")
-
-        rewards = []
-        for robot in self.robots:
-            reward = (robot.energy - robot.previous_energy) / 100
-            if self.is_finished():
-                if robot.energy > 0:
-                    reward += 5 + robot.energy / 100
-                else:
-                    reward -= 5
-            rewards.append(reward)
-
-        a = rewards[0]
-        b = rewards[1]
-        # Ensure 0 sum and minus a bit
-        rewards[0] = a - b
-        rewards[1] = b - a
-
-        return rewards, self.get_obs(), self.is_finished()
+        return self.get_obs()
 
 
-
-app = App(size=(600, 600), fps_target=60)
+app = App(size=(300, 300), fps_target=60)
 eng = EnvEngine()
-battle = AITrainingBattle(eng.robots, (600, 600), eng=eng)
-battle.bw.overlay.bars.append(("value", Colors.B, Colors.R))
-battle.bw.overlay.bars.append(("norm_value", Colors.W, Colors.K))
+battle = AITrainingBattle(eng.robots, (300, 300), eng=eng)
+battle.bw.overlay.add_bar("value", Colors.Y, Colors.K)
+battle.bw.overlay.add_bar("norm_value", Colors.W, Colors.K)
 app.child = battle
 
 app.console.add_command("sim", eng.set_rate, help="Sets the Simulation rate.")
@@ -124,21 +106,21 @@ def main(debug=False, sample=False):
             # Calculate time to sleep
             time.sleep(max(0, eng.next_sim - time.time()))
             app.step()
-            
+
             actions, value, new_states = model.sample(
-                obs[np.newaxis].astype(np.float32), 
-                eng.get_lstmstate(), 
-                eng.get_action_mask()[np.newaxis]
+                obs[np.newaxis].astype(np.float32),
+                eng.get_lstmstate(),
+                eng.get_action_mask()[np.newaxis],
             )
 
             actions = actions.numpy()
             value = value.numpy()
             eng.set_lstmstate(new_states.numpy())
 
-            _, obs, _ = eng.step(actions[0])
+            obs = eng.step(actions[0])
 
             for i, robot in enumerate(eng.robots):
-                robot.value = (value[0, i, 0] + 8) / 16
+                robot.value = (value[0, i, 0] + 1) / 2
                 robot.norm_value = (value[0, i, 0] - value.min()) / (
                     value.max() - value.min()
                 )

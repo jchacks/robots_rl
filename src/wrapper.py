@@ -115,9 +115,9 @@ class Dummy(Robot):
 
         # Stop full rotations from giving rewards
         if turn > 0:
-            self.step_reward -= 0.02
+            self.step_reward -= 0.014
         if turret > 0:
-            self.step_reward -= 0.02
+            self.step_reward -= 0.014
 
         try:
             self.moving = MOVING[move]

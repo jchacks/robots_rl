@@ -19,7 +19,7 @@ Losses = namedtuple(
 )
 
 ACTION_DIMS = (1, 3 * 3 * 3)
-REG_RATE = 1e-5
+REG_RATE = 1e-3
 
 
 def map_numpy(func):
@@ -333,8 +333,8 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=1e-3,
-        learning_rate=5e-5,
+        entropy_scale=3e-2, 
+        learning_rate=5e-4,
         epsilon=0.2,
     ) -> None:
         """Class to manage training a model.

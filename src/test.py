@@ -73,6 +73,7 @@ class EnvEngine(Engine):
 
     def step(self, actions):
         for robot, action in zip(self.robots, actions):
+            robot.step_reward = 0
             robot.assign_actions(action)
             robot.prev_action = action
 
@@ -86,6 +87,7 @@ app = App(size=(300, 300), fps_target=60)
 eng = EnvEngine()
 battle = AITrainingBattle(eng.robots, (300, 300), eng=eng)
 battle.bw.overlay.add_bar("value", Colors.Y, Colors.K)
+battle.bw.overlay.add_bar("step_reward", Colors.O, Colors.W, -0.5, 0.5)
 battle.bw.overlay.add_bar("norm_value", Colors.W, Colors.K)
 app.child = battle
 

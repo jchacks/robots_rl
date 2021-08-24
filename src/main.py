@@ -31,14 +31,14 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=1000,
+        default=500,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
         "-s",
         "--steps",
         type=int,
-        default=20,
+        default=25,
         help="Number of steps to use for training.",
     )
     return parser.parse_args()

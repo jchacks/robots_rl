@@ -333,8 +333,8 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=3e-2, 
-        learning_rate=5e-4,
+        entropy_scale=1e-2, 
+        learning_rate=3e-4,
         epsilon=0.2,
     ) -> None:
         """Class to manage training a model.

@@ -1,14 +1,15 @@
 import logging
-import operator
+import os
 import time
-from functools import reduce
 from collections import defaultdict, deque
 from contextlib import contextmanager
-import numba as nb
+
 import numpy as np
+import tensorflow as tf
 import tqdm
 from robots.robot.utils import *
-import tensorflow as tf
+
+PROJECT_ROOT = os.path.abspath(os.path.dirname(__file__) + "/../")
 
 # Action selection lists
 TURNING = [Turn.NONE, Turn.LEFT, Turn.RIGHT]
@@ -19,7 +20,9 @@ def cast(dtype):
     def wrap(function):
         def inner(*args, **kwargs):
             return tf.cast(function(*args, **kwargs), dtype)
+
         return inner
+
     return wrap
 
 
@@ -28,27 +31,27 @@ class Timer(object):
         self.splits = {}
         self.diffs = defaultdict(lambda: deque(maxlen=maxlen))
         self.times_called = defaultdict(int)
-
-    @contextmanager
-    def ctx(self, name="root"):
-        self.split(name)
-        yield
-        self.add_diff(name)
+        self.order = {}
+        self.hier = []
 
     def start(self, name="root"):
-        self.splits[name] = time.time()
+        self.hier.append(name)
+        self.order[tuple(self.hier)] = None
+        self.splits[tuple(self.hier)] = time.time()
 
-    def diff(self, name="root"):
-        return time.time() - self.splits[name]
+    def stop(self, remove="root"):
+        if remove != self.hier[-1]:
+            raise RuntimeError(f"Cannot remove unstarted timer {remove}.")
 
-    def stop(self, name="root"):
+        name = tuple(self.hier)
         self.times_called[name] += 1
-        diff = self.diff(name)
+        diff = time.time() - self.splits[name]
         self.diffs[name].append(diff)
         del self.splits[name]
+        self.hier.pop()
         return diff
 
-    def mean_diffs(self, name="root"):
+    def mean_diffs(self, name):
         diffs = self.diffs.get(name, None)
         if diffs is None:
             raise KeyError(f"Key '{name}' not found.")
@@ -56,8 +59,23 @@ class Timer(object):
         self.times_called[name] = 0
         return np.mean(diffs) * num
 
+    def wrap(self, name):
+        def wrapper(func):
+            def inner(*args, **kwargs):
+                self.start(name)
+                ret = func(*args, **kwargs)
+                self.stop(name)
+                return ret
+            return inner
+        return wrapper
+
     def log_str(self):
-        return '\n'.join([f"{k}: {self.mean_diffs(k)}" for k in self.diffs.keys()]) + '\n'
+        return (
+            "\n".join(
+                [f"{'-'.join(k)}: {self.mean_diffs(k)}" for k in self.order.keys()]
+            )
+            + "\n"
+        )
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -82,10 +100,22 @@ def make_logger():
     return logger
 
 
-def discounted(rewards, dones, last_value, gamma=0.99):
+def discounted(rewards, dones, gamma=0.99):
     discounted = []
-    r = last_value
-    for reward, done in zip(rewards[::-1], dones[::-1]):
+
+    r = rewards[-1]
+    for reward, done in zip(rewards[:-1][::-1], dones[::-1]):
         r = reward + gamma * r * (1.0 - done)
         discounted.append(r)
-    return np.concatenate(discounted[::-1])
+    return np.stack(discounted[::-1])
+
+
+def gae(rewards, values, masks, gamma=0.99, lmbda=0.95):
+    deltas = rewards[:-1] + (gamma * values[1:] * masks) - values[:-1]
+
+    gae = np.zeros(rewards.shape)
+    lastgae = 0
+    for i in reversed(range(len(deltas))):
+        gae[i] = lastgae = deltas[i] + gamma * lmbda * masks[i] * lastgae
+    ret = gae + values
+    return gae[:-1], ret[:-1]

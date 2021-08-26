@@ -38,13 +38,7 @@ class EnvEngine(Engine):
     def init_robot(self, robot):
         robot.battle_size = self.size
         robot.opponents = [r for r in self.robots if r is not robot]
-
-    def init_robotdata(self, robot):
-        robot.position = np.random.uniform(np.array(self.size))
-        robot.base_rotation = random.random() * 2 * math.pi
-        robot.turret_rotation = random.random() * 2 * math.pi
-        robot.radar_rotation = robot.turret_rotation
-        robot.energy = 100
+        return {}
 
     def get_obs(self):
         return np.stack([robot.get_obs() for robot in self.robots])

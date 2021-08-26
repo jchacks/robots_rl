@@ -32,7 +32,7 @@ def get_argmax(actions, dims):
 
 
 class Dummy(PyRobot):
-    def init(self, size=None, **kwargs):
+    def init(self):
         self.value = 0.0  # Used for displaying predicted value
         self.norm_value = 0.0  # Used for displaying predicted value
         self.prev_action = np.zeros(len(ACTION_DIMS), dtype=np.uint8)
@@ -43,7 +43,6 @@ class Dummy(PyRobot):
 
         self.bullets_hit = 0
         self.hit_by_bullets = 0
-
         self.fire_power = np.random.uniform(0.1, 3.0)
 
     def run(self):

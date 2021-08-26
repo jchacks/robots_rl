@@ -333,7 +333,7 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=3e-2, 
+        entropy_scale=1e-2, 
         learning_rate=5e-4,
         epsilon=0.2,
     ) -> None:

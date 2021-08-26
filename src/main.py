@@ -31,7 +31,7 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=10000,
+        default=1000,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
@@ -55,13 +55,12 @@ class EnvEngine(Engine):
     def init_robot(self, robot):
         robot.battle_size = self.size
         robot.opponents = [r for r in self.robots if r is not robot]
-
-    def init_robotdata(self, robot):
-        robot.position = np.random.uniform(np.array(self.size))
-        robot.base_rotation = random.random() * 360
-        robot.turret_rotation = random.random() * 360
-        robot.radar_rotation = robot.turret_rotation
-        robot.energy = random.randint(30, 100)  # Randomize starting hp
+        return {
+            "position": np.random.uniform(np.array(self.size)),
+            "base_rotation": random.random() * 360,
+            "turret_rotation": random.random() * 360,
+            "energy": random.randint(30, 100),  # Randomize starting hp,
+        }
 
     def get_obs(self):
         return np.stack([robot.get_obs() for robot in self.robots])
@@ -300,12 +299,6 @@ class Runner(object):
         m_values[-1] = last_values[:, :, 0]
         m_rewards[-1] = last_values[:, :, 0]
 
-        # if self.train_iteration == 0:
-        #     _ = old_model.run(observations, states, shoot_mask)
-
-        # p, l, v = model.prob(observations, states, shoot_mask)
-        # print([p[0:4] for p in p], [l[0:4] for l in l], v[0:4])
-
         # disc_reward = discounted(m_rewards, m_dones, self.gamma)
         advs, rets = gae(m_rewards, m_values, ~m_dones, self.gamma, self.lmbda)
 
@@ -365,9 +358,6 @@ class Runner(object):
                 "entropy_reg": losses.entropy,
                 "entropy": np.mean(losses.entropies),
                 "shoot_entropy": losses.entropies[0],
-                # "turn_entropy": losses.entropies[1],
-                # "move_entropy": losses.entropies[2],
-                # "turret_entropy": losses.entropies[3],
                 "advantage": losses.advantage,
                 "values": losses.value,
                 "regularisation": losses.reg_loss,
@@ -386,7 +376,7 @@ def main(steps, envs, render=False, wandboff=False):
 
     # Initate WandB before running
     if not WANDBOFF:
-        wandb.init(project="robots_rl", entity="jchacks")
+        wandb.init(project="robots_rl", entity="jchacks", resume=True)
         config = wandb.config
         config.critic_scale = runner.trainer.critic_scale
         config.entropy_scale = runner.trainer.entropy_scale

@@ -5,7 +5,7 @@ import random
 
 import numpy as np
 from robots.app import App
-from robots.engine import Engine
+from robots.engine_c.engine import Engine
 from robots.robot.utils import *
 from robots.ui.utils import Colors
 
@@ -22,12 +22,6 @@ def parse_args():
     parser.add_argument(
         "-v", "--verbose", action="store_true", help="Print debugging information."
     )
-    parser.add_argument(
-        "-s",
-        "--sample",
-        action="store_true",
-        help="Using the probability sampling instead of argmax.",
-    )
     return parser.parse_args()
 
 
@@ -39,17 +33,11 @@ model = model_manager.model
 class EnvEngine(Engine):
     def __init__(self, i=None):
         robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-        super().__init__(
-            robots,
-            (300, 300),
-            bullet_collisions_enabled=False,
-            gun_heat_enabled=True,
-            energy_decay_enabled=False,
-            rate=-1,
-        )
+        super().__init__(robots, (300, 300))
 
-    def init(self):
-        super().init(robot_kwargs={"all_robots": self.robots})
+    def init_robot(self, robot):
+        robot.battle_size = self.size
+        robot.opponents = [r for r in self.robots if r is not robot]
 
     def init_robotdata(self, robot):
         robot.position = np.random.uniform(np.array(self.size))
@@ -69,7 +57,7 @@ class EnvEngine(Engine):
             robot.lstmstate = states[:, i]
 
     def get_action_mask(self):
-        return np.stack([r.turret_heat > 0 for r in self.robots])
+        return np.stack([r.heat > 0 for r in self.robots])
 
     def step(self, actions):
         for robot, action in zip(self.robots, actions):
@@ -91,11 +79,12 @@ battle.bw.overlay.add_bar("step_reward", Colors.O, Colors.W, -0.5, 0.5)
 battle.bw.overlay.add_bar("norm_value", Colors.W, Colors.K)
 app.child = battle
 
-app.console.add_command("sim", eng.set_rate, help="Sets the Simulation rate.")
+app.console.add_command("sim", battle.set_tick_rate, help="Sets the Simulation rate.")
 
 
-def main(debug=False, sample=False):
-    eng.set_rate(60)
+def main():
+    battle.set_tick_rate(60)
+
     while True:
         eng.init()
         for robot in eng.robots:
@@ -106,7 +95,9 @@ def main(debug=False, sample=False):
         print("Running test")
         while not eng.is_finished():
             # Calculate time to sleep
-            time.sleep(max(0, eng.next_sim - time.time()))
+            time.sleep(max(0, battle.next_sim - time.time()))
+            battle.next_sim = time.time() + battle.interval
+
             app.step()
 
             actions, value, new_states = model.sample(
@@ -118,7 +109,6 @@ def main(debug=False, sample=False):
             actions = actions.numpy()
             value = value.numpy()
             eng.set_lstmstate(new_states.numpy())
-
             obs = eng.step(actions[0])
 
             for i, robot in enumerate(eng.robots):
@@ -127,20 +117,8 @@ def main(debug=False, sample=False):
                     value.max() - value.min()
                 )
 
-            if debug:
-                for i, r in enumerate(robots):
-                    print(
-                        r.base_color,
-                        r.position,
-                        r.moving,
-                        r.base_turning,
-                        r.turret_turning,
-                        r.should_fire,
-                        actions[i],
-                        value[i],
-                    )
 
 
 if __name__ == "__main__":
     args = parse_args()
-    main(debug=args.verbose, sample=args.sample)
+    main()

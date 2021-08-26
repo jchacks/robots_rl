@@ -6,7 +6,7 @@ import time
 import numpy as np
 import tensorflow as tf
 from robots.app import App
-from robots.engine import Engine
+from robots.engine_c.engine import Engine
 from robots.robot.utils import *
 
 import wandb
@@ -31,7 +31,7 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=500,
+        default=10000,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
@@ -50,17 +50,11 @@ ACTION_DIMS = (1, 3 * 3 * 3)
 class EnvEngine(Engine):
     def __init__(self, i=None):
         robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-        super().__init__(
-            robots,
-            (300, 300),
-            bullet_collisions_enabled=False,
-            gun_heat_enabled=True,
-            energy_decay_enabled=False,
-            rate=-1,
-        )
+        super().__init__(robots, (300, 300))
 
-    def init(self):
-        super().init(robot_kwargs={"all_robots": self.robots})
+    def init_robot(self, robot):
+        robot.battle_size = self.size
+        robot.opponents = [r for r in self.robots if r is not robot]
 
     def init_robotdata(self, robot):
         robot.position = np.random.uniform(np.array(self.size))
@@ -80,19 +74,22 @@ class EnvEngine(Engine):
             robot.lstmstate[:] = states[:, i]
 
     def get_action_mask(self):
-        return np.stack([r.turret_heat > 0 for r in self.robots])
+        return np.stack([r.heat > 0 for r in self.robots])
 
     def step(self, actions):
+        timer.start("assign_actions")
         for robot, action in zip(self.robots, actions):
             robot.step_reward = 0
             # assign action contains rewards
             robot.assign_actions(action)
             robot.prev_action = action
+        timer.stop("assign_actions")
 
         timer.start("super_step")
         super().step()
         timer.stop("super_step")
 
+        timer.start("rewards")
         # Add extra rewards to step_reward
         for robot in self.robots:
             curr = robot.previous_energy / 100
@@ -112,11 +109,16 @@ class EnvEngine(Engine):
 
         for i, robot in enumerate(self.robots):
             robot.total_reward += rewards[i]
+        timer.stop("rewards")
 
         # Sub for more than 1 robot
         rewards -= (rewards @ (1 - np.eye(len(rewards)))) / (len(rewards) - 1)
         rewards -= 0.1
-        return rewards, self.get_obs(), self.is_finished()
+
+        timer.start("observations")
+        obs = self.get_obs()
+        timer.stop("observations")
+        return rewards, obs, self.is_finished()
 
 
 class Runner(object):
@@ -127,7 +129,7 @@ class Runner(object):
         self.nenvs = nenvs
         self.steps = steps
         self.gamma = 0.99
-        self.lmbda = 0.97  
+        self.lmbda = 0.97
         model = Model(ACTION_DIMS)
         self.trainer = Trainer(model)
 
@@ -399,9 +401,9 @@ def main(steps, envs, render=False, wandboff=False):
         from robots.ui.utils import Colors
         from wrapper import AITrainingBattle
 
-        app = App(size=(300,300), fps_target=60)
+        app = App(size=(300, 300), fps_target=60)
         eng = runner.engines[-1]
-        battle = AITrainingBattle(eng.robots, (300,300), eng=eng)
+        battle = AITrainingBattle(eng.robots, (300, 300), eng=eng)
         battle.bw.overlay.add_bar("step_reward", Colors.B, Colors.R, -2, 2)
 
         app.child = battle

@@ -11,11 +11,10 @@ from robots.robot.utils import *
 
 import wandb
 from model import Model, ModelManager, Trainer
-from utils import Timer, gae
+from utils import TIMER, gae
 from wrapper import Dummy
 
 WANDBOFF = True
-timer = Timer()
 
 
 def parse_args():
@@ -49,46 +48,28 @@ ACTION_DIMS = (1, 3 * 3 * 3)
 
 class EnvEngine(Engine):
     def __init__(self, i=None):
-        robots = [Dummy((255, 0, 0)), Dummy((0, 255, 0))]
-        super().__init__(robots, (300, 300))
+        super().__init__([Dummy((255, 0, 0)), Dummy((0, 255, 0))], (300, 300))
 
     def init_robot(self, robot):
         robot.battle_size = self.size
         robot.opponents = [r for r in self.robots if r is not robot]
         return {
-            "position": np.random.uniform(np.array(self.size)),
-            "base_rotation": random.random() * 360,
-            "turret_rotation": random.random() * 360,
-            "energy": random.randint(30, 100),  # Randomize starting hp,
+            "position": tuple(np.random.uniform(np.array(self.size))),
+            "energy": np.random.uniform(30, 100),  # Randomize starting hp,
         }
-
-    def get_obs(self):
-        return np.stack([robot.get_obs() for robot in self.robots])
-
-    def get_lstmstate(self):
-        return np.stack([robot.lstmstate for robot in self.robots], 1)
-
-    def set_lstmstate(self, states):
-        for i, robot in enumerate(self.robots):
-            robot.lstmstate[:] = states[:, i]
 
     def get_action_mask(self):
         return np.stack([r.heat > 0 for r in self.robots])
 
-    def step(self, actions):
-        timer.start("assign_actions")
-        for robot, action in zip(self.robots, actions):
+    def step(self):
+        for robot in self.robots:
             robot.step_reward = 0
-            # assign action contains rewards
-            robot.assign_actions(action)
-            robot.prev_action = action
-        timer.stop("assign_actions")
 
-        timer.start("super_step")
+        TIMER.start("super_step")
         super().step()
-        timer.stop("super_step")
+        TIMER.stop("super_step")
 
-        timer.start("rewards")
+        TIMER.start("rewards")
         # Add extra rewards to step_reward
         for robot in self.robots:
             curr = robot.previous_energy / 100
@@ -108,16 +89,16 @@ class EnvEngine(Engine):
 
         for i, robot in enumerate(self.robots):
             robot.total_reward += rewards[i]
-        timer.stop("rewards")
+        TIMER.stop("rewards")
 
         # Sub for more than 1 robot
         rewards -= (rewards @ (1 - np.eye(len(rewards)))) / (len(rewards) - 1)
         rewards -= 0.1
 
-        timer.start("observations")
-        obs = self.get_obs()
-        timer.stop("observations")
-        return rewards, obs, self.is_finished()
+        # TIMER.start("observations")
+        # obs = self.get_obs()
+        # TIMER.stop("observations")
+        return rewards, self.is_finished()
 
 
 class Runner(object):
@@ -135,10 +116,9 @@ class Runner(object):
         self.models = {"main": model}
         self.models.update({k: Model(ACTION_DIMS) for k in range(1, 4)})
         self.load_old_models()
+
         self.allocation = defaultdict(list)
-
         self.engines = [EnvEngine(i) for i in range(nenvs)]
-
         self.all_robots = np.array([r for env in self.engines for r in env.robots])
         self.num_robots = len(self.all_robots)
         self.allocate_agents()
@@ -149,9 +129,10 @@ class Runner(object):
         self.bbybuffer = deque(maxlen=1000)
 
         # Get first observations from each Engine
-        self.observations = np.concatenate([eng.get_obs() for eng in self.engines], 0)[
-            tf.newaxis
-        ]
+        self.lstm_states = np.zeros((2, self.num_robots, 128), np.float32)
+        self.observations = np.zeros((1, self.num_robots, 21), np.float32)
+        self.shoot_masks = np.zeros((1, self.num_robots, 1), np.bool)
+        self.fill_buffers()
 
     def allocate_agents(self):
         idx = 0
@@ -181,13 +162,22 @@ class Runner(object):
             manager = ModelManager(model)
             manager.restore(offset=-k * 4)
 
+    @TIMER.wrap("fill_buffers")
+    def fill_buffers(self):
+        for i, robot in enumerate(self.all_robots):
+            self.observations[:, i] = robot.get_obs()
+            self.shoot_masks[:, i] = robot.heat > 0
+
+    @TIMER.wrap("do_sample")
     def do_sample(self, observations, states, shoot_mask):
         actions = np.zeros((1, self.num_robots, len(ACTION_DIMS)), np.uint8)
         values = np.zeros((1, self.num_robots, 1))
         new_states = np.zeros((2, self.num_robots, 128), np.float32)
         for name, indicies in self.allocation.items():
             a, v, s = self.models[name].sample(
-                observations[:, indicies], states[:, indicies], shoot_mask[indicies]
+                observations[:, indicies],
+                states[:, indicies],
+                shoot_mask[:, indicies],
             )
             actions[:, indicies] = a
             values[:, indicies] = v
@@ -195,48 +185,44 @@ class Runner(object):
         return actions, values, states
 
     def run(self):
-        timer.start("run")
+        TIMER.start("run")
 
-        timer.start("tfstep")
-        observations = self.observations
-        states = np.concatenate([eng.get_lstmstate() for eng in self.engines], 1)
-        shoot_mask = np.concatenate([eng.get_action_mask() for eng in self.engines], 0)
-
+        TIMER.start("tfstep")
         actions, values, new_states = self.do_sample(
-            self.observations.astype(np.float32), states, shoot_mask
+            self.observations,
+            self.lstm_states,
+            self.shoot_masks,
         )
-        timer.stop("tfstep")
+        TIMER.stop("tfstep")
 
-        _actions = actions.reshape(self.nenvs, 2, len(ACTION_DIMS))
-        new_states = new_states.reshape(2, self.nenvs, 2, 128)
+        TIMER.start("step")
+        TIMER.start("assign_actions")
+        for i, robot in enumerate(self.all_robots):
+            robot.assign_actions(actions[0, i])
+        TIMER.stop("assign_actions")
 
         dones = []
         rewards = np.zeros((self.nenvs, 2))
-        self.observations = np.zeros((self.nenvs, 2, 23))
-
-        timer.start("step")
         for i, eng in enumerate(self.engines):
-            timer.start("eng")
-            reward, obs, done = eng.step(_actions[i])
-            timer.stop("eng")
+            TIMER.start("eng")
+            reward, done = eng.step()
+            TIMER.stop("eng")
 
-            eng.set_lstmstate(new_states[:, i])
             rewards[i] = reward
-            self.observations[i] = obs
             dones.append(done)
-        timer.stop("step")
+        TIMER.stop("step")
 
         dones = np.array(dones).repeat(2)
-        rewards = np.array(rewards).reshape(1, self.nenvs * 2)
+        rewards = np.array(rewards).reshape(1, self.num_robots)
 
         trainable_indicies = self.allocation["main"]
         memory = (
             rewards[:, trainable_indicies],
             actions[:, trainable_indicies],
             values[:, trainable_indicies],
-            observations[:, trainable_indicies],
-            states[:, trainable_indicies],
-            shoot_mask[trainable_indicies],
+            self.observations[:, trainable_indicies],
+            self.lstm_states[:, trainable_indicies],
+            self.shoot_masks[:, trainable_indicies],
             dones[trainable_indicies],
         )
 
@@ -247,16 +233,18 @@ class Runner(object):
                 self.bhitbuffer.append(np.mean([r.bullets_hit for r in eng.robots]))
                 self.bbybuffer.append(np.mean([r.hit_by_bullets for r in eng.robots]))
                 eng.init()
-                # Get the new initial observations
-                self.observations[i] = eng.get_obs()
 
-        # Record observations for next iteration
-        self.observations = self.observations.reshape(1, self.nenvs * 2, 23)
+        # Fill the obs, states and shoot mask buffers for the next iteration
+        # Has to be here after the eng.init()
+        self.fill_buffers()
+        self.lstm_states[:] = new_states
 
-        timer.stop("run")
+        TIMER.stop("run")
         return memory
 
+    @TIMER.wrap("train")
     def train(self):
+        TIMER.start("setup")
         # Can only train on actions sampled from the main policy
         indicies = self.allocation["main"]
         n_robots = len(indicies)
@@ -264,9 +252,10 @@ class Runner(object):
         m_rewards = np.zeros((self.steps + 1, n_robots), dtype=np.float32)
         m_values = np.zeros((self.steps + 1, n_robots), dtype=np.float32)
         m_dones = np.zeros((self.steps, n_robots), dtype=np.bool)
-        m_observations = np.zeros((self.steps, n_robots, 23), dtype=np.float32)
+        m_observations = np.zeros((self.steps, n_robots, 21), dtype=np.float32)
         m_states = np.zeros((self.steps, 2, n_robots, 128), dtype=np.float32)
-        m_shoot_masks = np.zeros((self.steps, n_robots), dtype=np.bool)
+        m_shoot_masks = np.zeros((self.steps, n_robots, 1), dtype=np.bool)
+        TIMER.stop("setup")
 
         for i in range(self.steps):
             (
@@ -278,6 +267,7 @@ class Runner(object):
                 shoot_masks,
                 dones,
             ) = self.run()
+            TIMER.start("memory")
             m_actions[i] = actions
             m_values[i] = values[:, :, 0]
             m_rewards[i] = rewards
@@ -285,14 +275,14 @@ class Runner(object):
             m_states[i] = states
             m_shoot_masks[i] = shoot_masks
             m_dones[i] = dones
+            TIMER.stop("memory")
             if self.on_step is not None:
                 self.on_step()
 
-        observations = self.observations
-        states = np.concatenate([eng.get_lstmstate() for eng in self.engines], 1)
-        shoot_mask = np.concatenate([eng.get_action_mask() for eng in self.engines], 0)
-        _, last_values, _ = self.models["main"].run(observations, states, shoot_mask)
-
+        # observations = self.observations
+        _, last_values, _ = self.models["main"].run(
+            self.observations, self.lstm_states, self.shoot_masks
+        )
         last_values = last_values.numpy()[:, indicies]
 
         # Insert into last slot the last values
@@ -376,8 +366,9 @@ def main(steps, envs, render=False, wandboff=False):
 
     # Initate WandB before running
     if not WANDBOFF:
-        wandb.init(project="robots_rl", entity="jchacks", resume=True)
+        wandb.init(project="robots_rl", entity="jchacks")
         config = wandb.config
+        config.engine = "cengine"
         config.critic_scale = runner.trainer.critic_scale
         config.entropy_scale = runner.trainer.entropy_scale
         config.learning_rate = runner.trainer.learning_rate
@@ -401,10 +392,10 @@ def main(steps, envs, render=False, wandboff=False):
 
     for iteration in range(1000000):
         for _ in range(5):
-            timer.start()
+            TIMER.start()
             runner.train()
-            timer.stop()
-            print(iteration, timer.log_str())
+            TIMER.stop()
+            print(iteration, TIMER.log_str())
         runner.trainer.copy_to_current_model()
 
 

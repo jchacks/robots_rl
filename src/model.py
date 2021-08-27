@@ -147,14 +147,14 @@ class Critic(tf.Module):
     def __init__(self, name="critic") -> None:
         super().__init__(name=name)
         self.d1 = layers.Dense(
-            16,
-            activation="elu",
+            32,
+            activation="relu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.bn1 = layers.BatchNormalization()
         self.d2 = layers.Dense(
             16,
-            activation="elu",
+            activation="relu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.o = layers.Dense(
@@ -163,8 +163,8 @@ class Critic(tf.Module):
 
     @tf.Module.with_name_scope
     def __call__(self, x):
-        # x = self.d1(x)
-        # x = self.d2(x)
+        x = self.d1(x)
+        x = self.d2(x)
         return self.o(x)
 
     @property
@@ -178,13 +178,13 @@ class Actor(tf.Module):
         self.num_actions = np.sum(action_space)
         self.d1 = layers.Dense(
             64,
-            activation="elu",
+            activation="relu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.bn1 = layers.BatchNormalization()
         self.d2 = layers.Dense(
             64,
-            activation="elu",
+            activation="relu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
         self.o = layers.Dense(
@@ -217,7 +217,7 @@ class Model(tf.Module):
         )
         self.d1 = layers.Dense(
             128,
-            activation="elu",
+            activation="relu",
             kernel_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
         )
 
@@ -333,7 +333,7 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=1e-2, 
+        entropy_scale=3e-2, 
         learning_rate=5e-4,
         epsilon=0.2,
     ) -> None:

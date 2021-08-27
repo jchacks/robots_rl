@@ -77,6 +77,7 @@ class Timer(object):
             + "\n"
         )
 
+TIMER = Timer()
 
 class TqdmLoggingHandler(logging.Handler):
     def __init__(self, level=logging.NOTSET):

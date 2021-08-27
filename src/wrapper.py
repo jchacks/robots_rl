@@ -3,7 +3,7 @@ from robots.robot import Robot
 from robots.engine_c.engine import PyRobot
 import numpy as np
 from robots.robot.events import *
-from utils import TURNING, MOVING
+from utils import TURNING, MOVING, TIMER
 import random
 
 ACTION_DIMS = (1, 3 * 3 * 3)
@@ -60,9 +60,8 @@ class Dummy(PyRobot):
         self.step_reward -= 0.5
 
     def get_obs(self):
-        s = np.array(self.battle_size)
-        center = s // 2 - self.position
-        center = center / max(np.sqrt(np.sum(center ** 2)), 1)
+        TIMER.start("self")
+        p = np.array(self.position)
         R = get_rot_mat(-self.base_rotation)
 
         turret = self.turret_rotation
@@ -72,37 +71,28 @@ class Dummy(PyRobot):
         other = get_action(other, (3, 3, 3))
         p_action = np.concatenate([[shoot], other])
         oha = np.concatenate([l[act][:-1] for act, l in zip(p_action, OHA_ACTIONS)])
-        obs = np.concatenate(
-            [
-                [(self.energy / 50) - 1, self.heat / 30, self.speed / 8],
-                R @ turret,
-                R @ center,
-                oha,
-            ],
-            axis=0,
-        )
-
+        obs = [self.energy, self.heat, self.speed, *(R @ turret), *oha]
+        TIMER.stop("self")
+        TIMER.start("oppo")
         oppo_data = []
         for r in self.opponents:
-            direction = np.array(r.position) - np.array(self.position)
-            distance = max(np.sqrt(np.sum(direction ** 2)), 1.0)
-            direction = direction / distance
+            direction = np.array(r.position) - p
+            distance = np.sqrt(np.sum(direction ** 2))
+            direction = direction / (distance + 1e-8)
             oppo_data.append(
-                np.array(
-                    [
-                        (r.energy / 50) - 1,
-                        np.log(distance) / np.log(100),
-                        # distance/300,
-                        *(R @ direction),
-                        r.speed / 8,
-                        np.dot(turret, direction),
-                    ]
-                )
+                [
+                    r.energy,
+                    distance,
+                    *(R @ direction),
+                    r.speed,
+                    np.dot(turret, direction),
+                ]
             )
-
+        TIMER.stop("oppo")
         return np.concatenate([obs] + oppo_data)
 
     def assign_actions(self, action):
+        self.prev_action = action
         # Apply actions
         # shoot, turn, move, turret = action
         shoot, other = action

@@ -43,33 +43,21 @@ class EnvEngine(Engine):
     def get_obs(self):
         return np.stack([robot.get_obs() for robot in self.robots])
 
-    def get_lstmstate(self):
-        return np.stack([robot.lstmstate for robot in self.robots], 1)
-
-    def set_lstmstate(self, states):
-        for i, robot in enumerate(self.robots):
-            robot.lstmstate = states[:, i]
-
-    def get_action_mask(self):
-        return np.stack([r.heat > 0 for r in self.robots])
-
-    def step(self, actions):
-        for robot, action in zip(self.robots, actions):
+    def step(self):
+        for robot in self.robots:
+            robot.step_reward_ema -= (1 - 0.9) * (robot.step_reward_ema - robot.step_reward)
             robot.step_reward = 0
-            robot.assign_actions(action)
-            robot.prev_action = action
 
         timer.start("super_step")
         super().step()
         timer.stop("super_step")
-        return self.get_obs()
 
 
 app = App(size=(300, 300), fps_target=60)
 eng = EnvEngine()
 battle = AITrainingBattle(eng.robots, (300, 300), eng=eng)
 battle.bw.overlay.add_bar("value", Colors.Y, Colors.K)
-battle.bw.overlay.add_bar("step_reward", Colors.O, Colors.W, -0.5, 0.5)
+battle.bw.overlay.add_bar("step_reward_ema", Colors.O, Colors.W, -1, 1)
 battle.bw.overlay.add_bar("norm_value", Colors.W, Colors.K)
 app.child = battle
 
@@ -84,7 +72,13 @@ def main():
         for robot in eng.robots:
             print(robot.fire_power)
         model_manager.restore()
-        obs = eng.get_obs()
+
+        obs = np.zeros((1, len(eng.robots), 21), np.float32)
+        mask = np.zeros((1, len(eng.robots), 1), np.bool)
+        for i, robot in enumerate(eng.robots):
+            obs[:, i] = robot.get_obs()
+            mask[:, i] = robot.heat > 0
+        states = np.zeros((2, len(eng.robots), 128), np.float32)
 
         print("Running test")
         while not eng.is_finished():
@@ -94,16 +88,19 @@ def main():
 
             app.step()
 
-            actions, value, new_states = model.sample(
-                obs[np.newaxis].astype(np.float32),
-                eng.get_lstmstate(),
-                eng.get_action_mask()[np.newaxis],
-            )
-
+            actions, value, new_states = model.sample(obs,states,mask)
             actions = actions.numpy()
             value = value.numpy()
-            eng.set_lstmstate(new_states.numpy())
-            obs = eng.step(actions[0])
+            
+            for i, robot in enumerate(eng.robots):
+                robot.assign_actions(actions[0, i])
+
+            eng.step()
+
+            for i, robot in enumerate(eng.robots):
+                obs[:, i] = robot.get_obs()
+                mask[:, i] = robot.heat > 0
+            states[:] = new_states
 
             for i, robot in enumerate(eng.robots):
                 robot.value = (value[0, i, 0] + 1) / 2

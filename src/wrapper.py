@@ -5,9 +5,19 @@ import numpy as np
 from robots.robot.events import *
 from utils import TURNING, MOVING, TIMER
 import random
+import numba as nb
+
 
 ACTION_DIMS = (1, 3 * 3 * 3)
 OHA_ACTIONS = [np.eye(n + 1) for n in (1, 3, 3, 3)]
+
+
+def get_action_vector(action):
+    shoot, other = action
+    other = np.unravel_index(other, (3, 3, 3))
+    return np.concatenate(
+        [[shoot]] + [l[act][:-1] for act, l in zip(other, OHA_ACTIONS[1:])]
+    )
 
 
 class AITrainingBattle(Battle):
@@ -39,6 +49,7 @@ class Dummy(PyRobot):
         self.lstmstate = np.zeros((2, 128), dtype=np.float32)
 
         self.step_reward = 0
+        self.step_reward_ema = 0
         self.total_reward = 0
 
         self.bullets_hit = 0
@@ -56,40 +67,36 @@ class Dummy(PyRobot):
         self.step_reward += 2
         self.bullets_hit += 1
 
-    def on_hit_wall(self, event: HitWallEvent):
+    def on_hit_wall(self):
         self.step_reward -= 0.5
 
     def get_obs(self):
         TIMER.start("self")
-        p = np.array(self.position)
         R = get_rot_mat(-self.base_rotation)
+        turret = self.turret_direction
+        TIMER.start("prev_action")
+        oha = get_action_vector(self.prev_action)
+        TIMER.stop("prev_action")
 
-        turret = self.turret_rotation
-        turret = np.array([np.cos(turret), np.sin(turret)])
-
-        shoot, other = self.prev_action
-        other = get_action(other, (3, 3, 3))
-        p_action = np.concatenate([[shoot], other])
-        oha = np.concatenate([l[act][:-1] for act, l in zip(p_action, OHA_ACTIONS)])
-        obs = [self.energy, self.heat, self.speed, *(R @ turret), *oha]
+        obs = [self.energy / 50 - 1, self.heat / 15 - 1, self.speed / 8, *(R @ turret)]
         TIMER.stop("self")
         TIMER.start("oppo")
         oppo_data = []
         for r in self.opponents:
-            direction = np.array(r.position) - p
+            direction = r.position - self.position
             distance = np.sqrt(np.sum(direction ** 2))
             direction = direction / (distance + 1e-8)
             oppo_data.append(
                 [
-                    r.energy,
-                    distance,
+                    r.energy / 50 - 1,
+                    distance / 500,
                     *(R @ direction),
-                    r.speed,
+                    r.speed / 8,
                     np.dot(turret, direction),
                 ]
             )
         TIMER.stop("oppo")
-        return np.concatenate([obs] + oppo_data)
+        return np.concatenate([obs] + [oha] + oppo_data)
 
     def assign_actions(self, action):
         self.prev_action = action
@@ -100,9 +107,9 @@ class Dummy(PyRobot):
 
         # Stop full rotations from giving rewards
         if turn > 0:
-            self.step_reward -= 0.014
+            self.step_reward -= 0.03
         if turret > 0:
-            self.step_reward -= 0.014
+            self.step_reward -= 0.03
 
         try:
             self.moving = MOVING[move].value

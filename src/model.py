@@ -2,19 +2,26 @@ import tensorflow as tf
 import numpy as np
 from tensorflow.keras import layers, initializers, regularizers
 from tensorflow.python.ops.variables import Variable
-from distributions import GroupedPd, CategoricalPd, MaskedBernoulliPd, MaskedCategoricalPd
+from distributions import (
+    GroupedPd,
+    CategoricalPd,
+    MaskedBernoulliPd,
+    MaskedCategoricalPd,
+)
 from utils import PROJECT_ROOT
 from collections import namedtuple
 import operator
 
 import os
+tf.debugging.enable_check_numerics()
 
 if os.environ.get("DEBUG"):
     tf.config.run_functions_eagerly(True)
 
+
 Losses = namedtuple(
     "Losses",
-    "loss,actor,critic,ratio,ratio_clipped,entropy,entropies,"
+    "loss,actor,pg_loss1,pg_loss2,critic,ratio,ratio_clipped,entropy,entropies,"
     "advantage,value,d_grads,d_grads_actor,d_grads_critic,reg_loss",
 )
 
@@ -122,9 +129,10 @@ class LSTM(tf.keras.layers.Layer):
 
 
 class LearningNormalization(tf.keras.layers.Layer):
-    def __init__(self, axis=-2):
+    def __init__(self, axis=-2, learning_rate=0.9):
         super(LearningNormalization, self).__init__()
         self.axis = axis
+        self.learning_rate = learning_rate
 
     def build(self, input_shape):
         input_shape = tf.TensorShape(input_shape)
@@ -138,9 +146,9 @@ class LearningNormalization(tf.keras.layers.Layer):
             print("Norm Tracing, training")
             mean = tf.math.reduce_mean(_x, self.axis)
             stddev = tf.math.reduce_std(_x, self.axis)
-            self.means.assign_sub((1 - 0.999) * (self.means - mean))
-            self.stds.assign_sub((1 - 0.999) * (self.stds - stddev))
-        return tf.clip_by_value((x - self.means) / (self.stds + 1e-8),-5.0,5.0)
+            self.means.assign_sub((1 - self.learning_rate) * (self.means - mean))
+            self.stds.assign_sub((1 - self.learning_rate) * (self.stds - stddev))
+        return tf.clip_by_value((x - self.means) / (self.stds + 1e-8), -5.0, 5.0)
 
 
 class Critic(tf.Module):
@@ -208,8 +216,6 @@ class Model(tf.Module):
         super().__init__(name=name)
         self.training = training
         self.action_space = action_space
-        # self.bn0 = layers.BatchNormalization()
-        self.norm = LearningNormalization()
         self.lstm = LSTM(
             units=128,
             kernelx_regularizer=regularizers.l1_l2(l1=REG_RATE, l2=REG_RATE),
@@ -226,7 +232,6 @@ class Model(tf.Module):
 
     @tf.Module.with_name_scope
     def __call__(self, obs, states, dones=None):
-        obs = self.norm(obs, training=self.training)
         latent, states = self.lstm(obs, states, dones)
         # latent = self.d1(latent)
         return self.actor(latent), self.critic(latent), tf.stack(states)
@@ -333,7 +338,7 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=3e-2, 
+        entropy_scale=1e-2,
         learning_rate=5e-4,
         epsilon=0.2,
     ) -> None:
@@ -348,14 +353,11 @@ class Trainer(object):
             entropy_scale (float, optional): Scale of entropy in the loss function. Defaults to 0.05.
         """
         self.learning_rate = learning_rate
-        # self.optimiser = tf.keras.optimizers.SGD(
-        #     learning_rate=self.learning_rate, momentum=0.5, nesterov=True
-        # )
         self.optimiser = tf.keras.optimizers.Adam(learning_rate=self.learning_rate)
         self.ret_stddev_mean = None
 
         self.sample_model = model
-        self.train_model = Model(ACTION_DIMS, training=True)
+        self.train_model = Model(ACTION_DIMS, name="trainer", training=True)
 
         self.model_manager = ModelManager(self.train_model)
         self.model_manager.restore()
@@ -406,14 +408,14 @@ class Trainer(object):
         returns = tf.cast(returns, tf.float32)
         dones = tf.cast(dones, tf.float32)
 
-        ret_stddev = tf.math.reduce_std(returns)
-        # Create ret stddev mean and initialise
-        if self.ret_stddev_mean is None:
-            self.ret_stddev_mean = tf.Variable(
-                ret_stddev, trainable=False, dtype=tf.float32
-            )
-        self.ret_stddev_mean.assign_sub((1 - 0.9) * (self.ret_stddev_mean - ret_stddev))
-        returns = returns / (self.ret_stddev_mean + 1e-8)
+        # ret_stddev = tf.math.reduce_std(returns)
+        # # Create ret stddev mean and initialise
+        # if self.ret_stddev_mean is None:
+        #     self.ret_stddev_mean = tf.Variable(
+        #         ret_stddev, trainable=False, dtype=tf.float32
+        #     )
+        # self.ret_stddev_mean.assign_sub((1 - 0.9) * (self.ret_stddev_mean - ret_stddev))
+        # returns = returns / (self.ret_stddev_mean + 1e-8)
 
         # Record the mean advs before norm for debugging
         d_adv = tf.reduce_mean(advantage)
@@ -441,9 +443,8 @@ class Trainer(object):
 
             pg_loss1 = -advantage * ratio
             pg_loss2 = -advantage * ratio_clipped
-            # a_losses = advantage * pd.neglogp(actions)[:, tf.newaxis]  # old loss
             a_loss = tf.reduce_mean(tf.maximum(pg_loss1, pg_loss2))
-
+    
             # Value function loss
             c_loss = tf.reduce_mean(tf.square(vpred[:, 0] - returns))
 
@@ -484,6 +485,8 @@ class Trainer(object):
         return Losses(
             loss=loss,
             actor=a_loss,
+            pg_loss1=pg_loss1,
+            pg_loss2=pg_loss2,
             critic=c_loss,
             ratio=ratio,
             ratio_clipped=ratio_clipped,

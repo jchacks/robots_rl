@@ -1,11 +1,8 @@
 import argparse
 from collections import defaultdict, deque
-import random
-import time
 
 import numpy as np
 import tensorflow as tf
-from robots.app import App
 from robots.engine_c.engine import Engine
 from robots.robot.utils import *
 
@@ -13,7 +10,9 @@ import wandb
 from model import Model, ModelManager, Trainer
 from utils import TIMER, gae
 from wrapper import Dummy
+import os
 
+DEBUG = os.environ.get("DEBUG")
 WANDBOFF = True
 
 
@@ -58,9 +57,6 @@ class EnvEngine(Engine):
             "energy": np.random.uniform(30, 100),  # Randomize starting hp,
         }
 
-    def get_action_mask(self):
-        return np.stack([r.heat > 0 for r in self.robots])
-
     def step(self):
         for robot in self.robots:
             robot.step_reward = 0
@@ -95,9 +91,6 @@ class EnvEngine(Engine):
         rewards -= (rewards @ (1 - np.eye(len(rewards)))) / (len(rewards) - 1)
         rewards -= 0.1
 
-        # TIMER.start("observations")
-        # obs = self.get_obs()
-        # TIMER.stop("observations")
         return rewards, self.is_finished()
 
 
@@ -201,15 +194,12 @@ class Runner(object):
             robot.assign_actions(actions[0, i])
         TIMER.stop("assign_actions")
 
-        dones = []
-        rewards = np.zeros((self.nenvs, 2))
+        dones = np.zeros((self.nenvs,), np.float32)
+        rewards = np.zeros((self.nenvs, 2), np.float32)
         for i, eng in enumerate(self.engines):
-            TIMER.start("eng")
             reward, done = eng.step()
-            TIMER.stop("eng")
-
             rewards[i] = reward
-            dones.append(done)
+            dones[i] = done
         TIMER.stop("step")
 
         dones = np.array(dones).repeat(2)
@@ -292,7 +282,7 @@ class Runner(object):
         # disc_reward = discounted(m_rewards, m_dones, self.gamma)
         advs, rets = gae(m_rewards, m_values, ~m_dones, self.gamma, self.lmbda)
 
-        epochs = True
+        epochs = False
         if epochs:
             num_batches = 4
             batch_size = (n_robots // num_batches) + 1
@@ -322,11 +312,13 @@ class Runner(object):
                 m_shoot_masks,
                 m_dones,
             )
-
-        # Checkpoint manager will save every x steps
-        saved = self.trainer.model_manager.checkpoint()
-        if saved:
-            self.load_old_models()
+        
+        # Dont want to overwrite models when debugging
+        if not DEBUG:
+            # Checkpoint manager will save every x steps
+            saved = self.trainer.model_manager.checkpoint()
+            if saved:
+                self.load_old_models()
 
         if not WANDBOFF:
             log_dict = {
@@ -340,6 +332,8 @@ class Runner(object):
                 "mean_hit_by_bullets": np.mean(self.bbybuffer),
                 "loss": losses.loss,
                 "actor": losses.actor,
+                "pg_loss1": wandb.Histogram(losses.pg_loss1),
+                "pg_loss2": wandb.Histogram(losses.pg_loss2),
                 "grads_actor": wandb.Histogram(losses.d_grads_actor),
                 "critic": losses.critic,
                 "grads_critic": wandb.Histogram(losses.d_grads_critic),
@@ -362,6 +356,7 @@ def main(steps, envs, render=False, wandboff=False):
     global WANDBOFF
     WANDBOFF = wandboff
 
+    num_train = 5
     runner = Runner(envs, steps)
 
     # Initate WandB before running
@@ -369,6 +364,7 @@ def main(steps, envs, render=False, wandboff=False):
         wandb.init(project="robots_rl", entity="jchacks")
         config = wandb.config
         config.engine = "cengine"
+        config.push_iterations = num_train
         config.critic_scale = runner.trainer.critic_scale
         config.entropy_scale = runner.trainer.entropy_scale
         config.learning_rate = runner.trainer.learning_rate
@@ -380,6 +376,7 @@ def main(steps, envs, render=False, wandboff=False):
         # Todo clean up this interaction with Engine and Battle
         from robots.app import App
         from robots.ui.utils import Colors
+
         from wrapper import AITrainingBattle
 
         app = App(size=(300, 300), fps_target=60)
@@ -391,7 +388,7 @@ def main(steps, envs, render=False, wandboff=False):
         runner.on_step = app.step
 
     for iteration in range(1000000):
-        for _ in range(5):
+        for _ in range(num_train):
             TIMER.start()
             runner.train()
             TIMER.stop()

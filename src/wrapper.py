@@ -1,11 +1,9 @@
 from robots.app import Battle
-from robots.robot import Robot
-from robots.engine_c.engine import PyRobot
+from RoboArena import PyRobot
 import numpy as np
 from robots.robot.events import *
 from utils import TURNING, MOVING, TIMER
 import random
-import numba as nb
 
 
 ACTION_DIMS = (1, 3 * 3 * 3)

@@ -13,11 +13,12 @@ from collections import namedtuple
 import operator
 
 import os
-tf.debugging.enable_check_numerics()
 
-if os.environ.get("DEBUG"):
+DEBUG = os.environ.get("DEBUG")
+if DEBUG:
+    # These consumer alot of memory per iteration use with care
     tf.config.run_functions_eagerly(True)
-
+    tf.debugging.enable_check_numerics()
 
 Losses = namedtuple(
     "Losses",
@@ -26,7 +27,7 @@ Losses = namedtuple(
 )
 
 ACTION_DIMS = (1, 3 * 3 * 3)
-REG_RATE = 1e-3
+REG_RATE = 5e-4
 
 
 def map_numpy(func):
@@ -177,7 +178,7 @@ class Critic(tf.Module):
 
     @property
     def losses(self):
-        return self.d1.losses
+        return self.d1.losses + self.d2.losses + self.o.losses
 
 
 class Actor(tf.Module):
@@ -208,7 +209,7 @@ class Actor(tf.Module):
 
     @property
     def losses(self):
-        return self.d1.losses
+        return self.d1.losses + self.d2.losses + self.o.losses
 
 
 class Model(tf.Module):
@@ -278,7 +279,13 @@ class Model(tf.Module):
         actions = dist.sample()
         return actions, value, states
 
+    @tf.function
     def run(self, obs, states, shoot_mask):
+        print(
+            f"Tracing run/mode, obs {obs.shape} {obs.dtype}, "
+            f"states {states.shape} {states.dtype}, "
+            f"mask {shoot_mask.shape} {shoot_mask.dtype}"
+        )
         logits, value, states = self(obs, states)
         dist = self.distribution(logits, shoot_mask)
         return dist.mode(), value, states
@@ -338,8 +345,8 @@ class Trainer(object):
         self,
         model,
         critic_scale=1.0,
-        entropy_scale=1e-2,
-        learning_rate=5e-4,
+        entropy_scale=5e-4,
+        learning_rate=7e-4,
         epsilon=0.2,
     ) -> None:
         """Class to manage training a model.
@@ -414,7 +421,7 @@ class Trainer(object):
         #     self.ret_stddev_mean = tf.Variable(
         #         ret_stddev, trainable=False, dtype=tf.float32
         #     )
-        # self.ret_stddev_mean.assign_sub((1 - 0.9) * (self.ret_stddev_mean - ret_stddev))
+        # self.ret_stddev_mean.assign_sub((1 - 0.99) * (self.ret_stddev_mean - ret_stddev))
         # returns = returns / (self.ret_stddev_mean + 1e-8)
 
         # Record the mean advs before norm for debugging
@@ -444,7 +451,7 @@ class Trainer(object):
             pg_loss1 = -advantage * ratio
             pg_loss2 = -advantage * ratio_clipped
             a_loss = tf.reduce_mean(tf.maximum(pg_loss1, pg_loss2))
-    
+
             # Value function loss
             c_loss = tf.reduce_mean(tf.square(vpred[:, 0] - returns))
 

@@ -3,7 +3,7 @@ from collections import defaultdict, deque
 
 import numpy as np
 import tensorflow as tf
-from robots.engine_c.engine import Engine
+from RoboArena import Engine
 from robots.robot.utils import *
 
 import wandb
@@ -29,7 +29,7 @@ def parse_args():
         "-n",
         "--envs",
         type=int,
-        default=1000,
+        default=10000,
         help="Number of envs to use for training.",
     )
     parser.add_argument(
@@ -158,7 +158,7 @@ class Runner(object):
     @TIMER.wrap("fill_buffers")
     def fill_buffers(self):
         for i, robot in enumerate(self.all_robots):
-            self.observations[:, i] = robot.get_obs()
+            self.observations[:, i] = robot.get_observations()
             self.shoot_masks[:, i] = robot.heat > 0
 
     @TIMER.wrap("do_sample")
@@ -282,11 +282,11 @@ class Runner(object):
         # disc_reward = discounted(m_rewards, m_dones, self.gamma)
         advs, rets = gae(m_rewards, m_values, ~m_dones, self.gamma, self.lmbda)
 
-        epochs = False
+        epochs = True
         if epochs:
-            num_batches = 4
+            num_batches = 10
             batch_size = (n_robots // num_batches) + 1
-            for _ in range(3):
+            for _ in range(2):
                 order = np.arange(n_robots)
                 np.random.shuffle(order)
                 for i in range(num_batches):
@@ -381,7 +381,7 @@ def main(steps, envs, render=False, wandboff=False):
 
         app = App(size=(300, 300), fps_target=60)
         eng = runner.engines[-1]
-        battle = AITrainingBattle(eng.robots, (300, 300), eng=eng)
+        battle = AITrainingBattle((300, 300), eng=eng)
         battle.bw.overlay.add_bar("step_reward", Colors.B, Colors.R, -2, 2)
 
         app.child = battle

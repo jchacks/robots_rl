@@ -27,7 +27,7 @@ def cast(dtype):
 
 
 class Timer(object):
-    def __init__(self, maxlen=10):
+    def __init__(self, maxlen=100):
         self.splits = {}
         self.diffs = defaultdict(lambda: deque(maxlen=maxlen))
         self.times_called = defaultdict(int)
